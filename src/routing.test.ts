@@ -100,6 +100,18 @@ describe("0G routing / trust request shaping", () => {
     expect(await shaped).toMatchObject({ model: "glm-5.3", verify_tee: true });
   });
 
+  it("does not add verify_tee when TEE verification is disabled", async () => {
+    let shaped: unknown;
+    const base = vi.fn((effectiveModel, _context, options) => {
+      shaped = options?.onPayload?.({ model: effectiveModel.id }, effectiveModel);
+      return stream(effectiveModel.id);
+    });
+    const wrapped = wrapZeroGProviderStream({ streamFn: base } as unknown as ProviderWrapStreamFnContext)!;
+
+    await wrapped(model("glm-5.3-flash"), {} as never, {});
+    expect(await shaped).not.toHaveProperty("verify_tee");
+  });
+
   it("rejects an unsealed response when private trust is requested", async () => {
     setPluginConfigForTests({
       defaults: { capabilityDiscovery: { enabled: false }, observability: { enabled: false } },
@@ -116,6 +128,20 @@ describe("0G routing / trust request shaping", () => {
     });
     const wrapped = wrapZeroGProviderStream({ streamFn: base } as unknown as ProviderWrapStreamFnContext)!;
     await expect(wrapped(model("glm-5.3"), {} as never, {})).rejects.toThrow(/did not return sealed E2EE/);
+  });
+
+  it("accepts a sealed response when private trust is requested", async () => {
+    setPluginConfigForTests({
+      defaults: { capabilityDiscovery: { enabled: false }, observability: { enabled: false } },
+      models: { "glm-5.3": { trust: { mode: "private", allowDowngrade: false }, capabilityDiscovery: { enabled: false } } },
+    });
+    const base = vi.fn(async (effectiveModel, _context, options) => {
+      await options?.onResponse?.({ status: 200, headers: { "x-0g-e2ee": "sealed" } }, effectiveModel);
+      return stream(effectiveModel.id);
+    });
+    const wrapped = wrapZeroGProviderStream({ streamFn: base } as unknown as ProviderWrapStreamFnContext)!;
+
+    await expect(wrapped(model("glm-5.3"), {} as never, {})).resolves.toBeDefined();
   });
 
   it("does not delay an ordinary inference while background model discovery is pending", async () => {
@@ -136,15 +162,14 @@ describe("0G routing / trust request shaping", () => {
 
     const base = vi.fn((effectiveModel) => stream(effectiveModel.id));
     const wrapped = wrapZeroGProviderStream({ streamFn: base } as unknown as ProviderWrapStreamFnContext)!;
-    const pending = wrapped(model("glm-5.3-flash"), {} as never, {});
-    const winner = await Promise.race([
-      pending.then(() => "inference"),
-      new Promise<string>((resolve) => setTimeout(() => resolve("timeout"), 50)),
-    ]);
-    expect(winner).toBe("inference");
-    expect(base).toHaveBeenCalledTimes(1);
+    let settled = false;
+    const pending = wrapped(model("glm-5.3-flash"), {} as never, {}).then(() => { settled = true; });
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    const unblockedBeforeDiscoveryFinished = settled;
     release();
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await pending;
+    expect(unblockedBeforeDiscoveryFinished).toBe(true);
+    expect(base).toHaveBeenCalledTimes(1);
   });
 
   it("keeps private trust on the fresh blocking discovery path", async () => {
@@ -187,5 +212,95 @@ describe("0G routing / trust request shaping", () => {
     await pending;
     expect(base).toHaveBeenCalledTimes(1);
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects a response from a different provider when fallbacks are disabled", async () => {
+    setPluginConfigForTests({
+      defaults: {
+        capabilityDiscovery: { enabled: false },
+        observability: { enabled: false },
+        routing: { enabled: true, address: "0xabc", allowFallbacks: false },
+      },
+    });
+    const base = vi.fn(async (effectiveModel, _context, options) => {
+      await options?.onResponse?.({ status: 200, headers: { "x-provider": "0xdef" } }, effectiveModel);
+      return stream(effectiveModel.id);
+    });
+    const wrapped = wrapZeroGProviderStream({ streamFn: base } as unknown as ProviderWrapStreamFnContext)!;
+
+    await expect(wrapped(model("glm-5.3-flash"), {} as never, {})).rejects.toThrow(/pinned provider fallback/);
+    expect(base).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed when strict model discovery fails", async () => {
+    setPluginConfigForTests({
+      defaults: { capabilityDiscovery: { enabled: true, ttlSeconds: 300, timeoutMs: 5_000 }, observability: { enabled: false } },
+      models: { "glm-5.3": { trust: { mode: "private", allowDowngrade: false } } },
+    });
+    globalThis.fetch = vi.fn(async () => new Response("unavailable", { status: 503 })) as typeof fetch;
+    const base = vi.fn((effectiveModel) => stream(effectiveModel.id));
+    const wrapped = wrapZeroGProviderStream({ streamFn: base } as unknown as ProviderWrapStreamFnContext)!;
+
+    await expect(wrapped(model("glm-5.3"), {} as never, { apiKey: "strict-test-key" })).rejects.toThrow(/strict model discovery failed/);
+    expect(base).not.toHaveBeenCalled();
+  });
+
+  it("downgrades private trust only when policy explicitly permits it", async () => {
+    setPluginConfigForTests({
+      defaults: { capabilityDiscovery: { enabled: true, ttlSeconds: 300, timeoutMs: 5_000 }, observability: { enabled: false } },
+      models: { "glm-5.3": { trust: { mode: "private", allowDowngrade: true } } },
+    });
+    globalThis.fetch = vi.fn(async () => new Response("unavailable", { status: 503 })) as typeof fetch;
+    let seenHeaders: Record<string, string> | undefined;
+    const base = vi.fn((effectiveModel, _context, options) => {
+      seenHeaders = options?.headers as Record<string, string> | undefined;
+      return stream(effectiveModel.id);
+    });
+    const wrapped = wrapZeroGProviderStream({ streamFn: base } as unknown as ProviderWrapStreamFnContext)!;
+
+    await wrapped(model("glm-5.3"), {} as never, {});
+    expect(base).toHaveBeenCalledTimes(1);
+    expect(seenHeaders?.["X-0G-Provider-Trust-Mode"]).toBeUndefined();
+  });
+
+  it("rejects required TEE verification for a model without TEE capability", async () => {
+    setPluginConfigForTests({
+      defaults: { capabilityDiscovery: { enabled: false }, observability: { enabled: false } },
+      models: {
+        "qwen3.7-flash": {
+          trust: { mode: "private", allowDowngrade: false },
+          teeVerification: { enabled: true, required: true },
+        },
+      },
+    });
+    const base = vi.fn((effectiveModel) => stream(effectiveModel.id));
+    const wrapped = wrapZeroGProviderStream({ streamFn: base } as unknown as ProviderWrapStreamFnContext)!;
+
+    await expect(wrapped(model("qwen3.7-flash"), {} as never, {})).rejects.toThrow(/TEE verification required/);
+    expect(base).not.toHaveBeenCalled();
+  });
+
+  it("does not downgrade a pinned private route even when downgrade is allowed", async () => {
+    setPluginConfigForTests({
+      defaults: {
+        capabilityDiscovery: { enabled: true, ttlSeconds: 300, timeoutMs: 5_000 },
+        observability: { enabled: false },
+        routing: { enabled: true, address: "0xabc", allowFallbacks: false },
+      },
+      models: { "glm-5.3": { trust: { mode: "private", allowDowngrade: true } } },
+    });
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith("/models")) {
+        return new Response(JSON.stringify({
+          data: [{ id: "glm-5.3", supported_formats: ["openai", "responses", "anthropic"] }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+    const base = vi.fn((effectiveModel) => stream(effectiveModel.id));
+    const wrapped = wrapZeroGProviderStream({ streamFn: base } as unknown as ProviderWrapStreamFnContext)!;
+
+    await expect(wrapped(model("glm-5.3"), {} as never, { apiKey: "pinned-test-key" })).rejects.toThrow(/private trust mode unavailable/);
+    expect(base).not.toHaveBeenCalled();
   });
 });

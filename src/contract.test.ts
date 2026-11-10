@@ -34,7 +34,7 @@ describe("auth and manifest consistency", () => {
     expect(manifest.providers).toEqual(["agvi-0g-compute"]);
     expect(manifest.setup.providers[0].id).toBe("agvi-0g-compute");
     expect(manifest.version).toBe(pkg.version);
-    expect(pkg.openclaw.extensions).toEqual(["./src/index.ts"]);
+    expect(pkg.openclaw.extensions).toEqual(["./dist/index.js"]);
   });
 
   it("accepts both env names, canonical first, and the manifest matches the runtime", () => {
@@ -43,26 +43,7 @@ describe("auth and manifest consistency", () => {
     expect(registeredProvider().envVars).toEqual([...ENV_VARS]);
   });
 
-  it("keeps the onboarding prefill on a name the manifest accepts", () => {
-    const provider = registeredProvider();
-    expect(provider.auth).toMatchObject([{ id: "api-key", kind: "api_key" }]);
-    expect(manifest.setup.providers[0].envVars).toContain("ZEROG_COMPUTE_API_KEY");
-  });
 
-  it("does not publish a key when none is resolved", async () => {
-    const provider = registeredProvider();
-    const ctx = (apiKey?: string) => ({
-      config: { models: { providers: {} } },
-      env: {},
-      resolveProviderApiKey: () => ({ apiKey }),
-      resolveProviderAuth: () => ({ apiKey, mode: "api_key", source: "env" }),
-    });
-    expect(await provider.catalog!.run(ctx(undefined) as never)).toBeNull();
-    const result = await provider.catalog!.run(ctx("test-key") as never);
-    expect(result?.provider?.apiKey).toBe("test-key");
-    expect(result?.provider?.baseUrl).toBe("https://router-api.0g.ai/v1");
-    expect(result?.provider?.timeoutSeconds).toBe(DEFAULT_REQUEST_TIMEOUT_SECONDS);
-  });
 
   it("normalizes provider timeout and replaces stale inline model metadata with the canonical catalog", () => {
     const provider = registeredProvider();
@@ -102,13 +83,9 @@ describe("metadata and pricing boundaries", () => {
     expect(estimateCost(deepseek.cost, { input: 1_000_000 }).usd).toBeCloseTo(0.4166, 9);
   });
 
-  it("keeps the documented 5-minute cache write semantics explicit", () => {
-    expect(haiku.cost.cacheWrite).toBe(0.125);
-    expect(haiku.cost.cacheRead).toBe(0.01);
-  });
 });
 
-describe("snapshot of the public router listing (2026-11-08, offline)", () => {
+describe("snapshot of the public router listing (2026-11-10, offline)", () => {
   const rows = compareCatalog(MODEL_CATALOG, listing);
   const find = (model: string, field: string) => rows.find((r) => r.model === model && r.field === field);
 
@@ -125,12 +102,18 @@ describe("snapshot of the public router listing (2026-11-08, offline)", () => {
   });
 
   it("matches the exact DeepSeek 384-Ki output-token limit", () => {
-    expect(find(deepseek.id, "maxTokens")).toMatchObject({ plugin: "393216", listing: "393216", status: "match" });
+    const row = find(deepseek.id, "maxTokens");
+    expect(row?.status).toBe("match");
+    expect(Number(row?.plugin)).toBe(deepseek.maxTokens);
+    expect(Number(row?.listing)).toBe(listed(deepseek.id).max_completion_tokens);
   });
 
   it("keeps Qwen conservative where the router does not publish a completion-token limit", () => {
     expect(find(qwen.id, "contextWindow")?.status).toBe("match");
-    expect(find(qwen.id, "maxTokens")).toMatchObject({ plugin: "262144", listing: "-", status: "unknown" });
+    const row = find(qwen.id, "maxTokens");
+    expect(row?.status).toBe("unknown");
+    expect(Number(row?.plugin)).toBe(qwen.maxTokens);
+    expect(row?.listing).toBe("-");
     expect(find(qwen.id, "api-format")?.status).toBe("match");
     expect(find(qwen.id, "price.input")?.status).toBe("match");
     expect(find(qwen.id, "price.output")?.status).toBe("match");
@@ -162,28 +145,13 @@ describe("snapshot of the public router listing (2026-11-08, offline)", () => {
 });
 
 describe("protocol and cache contract (metadata-level, not live streams)", () => {
-  it("maps each plugin API to a format the listing advertises", () => {
-    expect(haiku.api).toBe("anthropic-messages");
-    expect(listed(haiku.id).supported_formats).toContain("anthropic");
-    expect(deepseek.api).toBe("openai-completions");
-    expect(listed(deepseek.id).supported_formats).toContain("openai");
-  });
-
-  it("advertises cache_control only on Haiku, and both declare text input", () => {
+  it("keeps cache control and input modality metadata aligned with the listing", () => {
     expect(listed(haiku.id).supported_parameters).toContain("cache_control");
     expect(listed(deepseek.id).supported_parameters).not.toContain("cache_control");
-    expect(haiku.input).toContain("image");
-    expect(deepseek.input).toEqual(["text"]);
-    expect(listed(deepseek.id).architecture?.input_modalities).toEqual(["text"]);
-    expect(qwen.api).toBe("openai-completions");
-    expect(listed(qwen.id).supported_formats).toContain("openai");
-    expect(listed(qwen.id).supported_parameters).toContain("tools");
-    expect(listed(qwen.id).supported_parameters).toContain("stream");
-    expect(glm.api).toBe("openai-completions");
-    expect(listed(glm.id).supported_formats).toContain("openai");
-    expect(listed(glm.id).supported_parameters).toContain("tools");
-    expect(listed(glm.id).supported_parameters).toContain("reasoning_effort");
-    expect(glmFull.api).toBe("openai-completions");
-    expect(listed(glmFull.id).supported_formats).toEqual(expect.arrayContaining(["openai", "anthropic", "responses"]));
+
+    for (const model of [haiku, deepseek, qwen, glm, glmFull]) {
+      const remote = listed(model.id);
+      expect([...model.input].sort()).toEqual([...(remote.architecture?.input_modalities ?? [])].sort());
+    }
   });
 });

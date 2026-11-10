@@ -11,11 +11,14 @@
  *   AGVI_0G_COMPUTE_API_KEY=... npm run health-check -- --probe --json
  */
 import { pathToFileURL } from "node:url";
+import { MODEL_CATALOG } from "../catalog.js";
+import { ROUTER_BASE_URL } from "../identifiers.js";
 
-const BASE_URL = "https://router-api.0g.ai/v1";
-const CATALOG_URL = `${BASE_URL}/models`;
-const OPENAI_MODELS = ["qwen3.7-flash", "deepseek-v4.1-flash", "glm-5.3-flash", "glm-5.3"] as const;
-const ALL_MODELS = ["claude-haiku-5.5", ...OPENAI_MODELS] as const;
+const CATALOG_URL = `${ROUTER_BASE_URL}/models`;
+const ALL_MODELS = MODEL_CATALOG.map((model) => model.id);
+const OPENAI_MODELS = MODEL_CATALOG
+  .filter((model) => model.api === "openai-completions")
+  .map((model) => model.id);
 const CATALOG_TIMEOUT_MS = 10_000;
 const PROBE_TIMEOUT_MS = 60_000;
 
@@ -96,7 +99,7 @@ async function readFirstSseData(response: Response, startedAt: number): Promise<
 async function probeOpenAiModel(model: string, apiKey: string): Promise<ProbeHealth> {
   const startedAt = Date.now();
   try {
-    const response = await fetch(`${BASE_URL}/chat/completions`, {
+    const response = await fetch(`${ROUTER_BASE_URL}/chat/completions`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,

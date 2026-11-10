@@ -47,7 +47,19 @@ describe("npm package contents", () => {
   it("ships the manifest, README, and compiled output", () => {
     expect(paths).toContain("openclaw.plugin.json");
     expect(paths).toContain("README.md");
-    expect(paths).toContain("dist/index.js");
+    expect(paths).toEqual(expect.arrayContaining([
+      "dist/catalog.js",
+      "dist/config.js",
+      "dist/discovery.js",
+      "dist/identifiers.js",
+      "dist/index.js",
+      "dist/pricing.js",
+      "dist/transport.js",
+      "dist/tools/catalog-compare.js",
+      "dist/tools/health-check.js",
+      "dist/tools/sync-config-stubs.js",
+      "dist/tools/usage-report.js",
+    ]));
   });
 
   it("does not ship tests or local scratch artefacts", () => {

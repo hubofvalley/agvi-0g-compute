@@ -11,7 +11,8 @@
  */
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-export const LISTING_URL = "https://router-api.0g.ai/v1/models";
+import { ROUTER_BASE_URL } from "../identifiers.js";
+export const LISTING_URL = `${ROUTER_BASE_URL}/models`;
 /** Listing prices are per token and rounded to 7 decimals (0.1 per million). */
 const LISTING_RESOLUTION_PER_TOKEN = 1e-7;
 const API_TO_FORMAT = {
@@ -125,8 +126,7 @@ async function main(argv) {
         process.exitCode = 2;
         return;
     }
-    // Lazy import keeps the pure comparison free of the OpenClaw SDK import.
-    const { MODEL_CATALOG } = await import("../index.js");
+    const { MODEL_CATALOG } = await import("../catalog.js");
     const rows = compareCatalog(MODEL_CATALOG, listing);
     process.stdout.write(argv.includes("--json") ? `${JSON.stringify(rows, null, 2)}\n` : `${formatRows(rows)}\nNo config was read or changed.\n`);
 }

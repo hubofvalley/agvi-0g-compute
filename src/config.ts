@@ -1,4 +1,7 @@
+import { normalizeModelId } from "./identifiers.js";
+
 export type ZeroGTransport = "auto" | "chat-completions" | "messages" | "responses";
+export type ConcreteZeroGTransport = Exclude<ZeroGTransport, "auto">;
 export type ZeroGTrustMode = "key-default" | "verified" | "private";
 
 export type RoutingConfig = {
@@ -119,7 +122,7 @@ export function parsePluginConfig(raw: unknown): ZeroGPluginConfig {
   const models: Record<string, ModelPolicyOverride> = {};
   for (const [id, value] of Object.entries(rawModels ?? {})) {
     const entry = asRecord(value);
-    if (entry) models[id] = entry as ModelPolicyOverride;
+    if (entry) models[normalizeModelId(id)] = entry as ModelPolicyOverride;
   }
   return {
     ...(defaults ? { defaults } : {}),
@@ -128,7 +131,8 @@ export function parsePluginConfig(raw: unknown): ZeroGPluginConfig {
 }
 
 export function resolveModelPolicy(config: ZeroGPluginConfig, modelId: string): ModelPolicy {
-  const modelOverride = config.models?.[modelId];
+  const normalizedModelId = normalizeModelId(modelId);
+  const modelOverride = config.models?.[normalizedModelId];
   const base = modelOverride?.inheritDefaults === false
     ? copyPolicy(BUILTIN_POLICY)
     : applyOverride(BUILTIN_POLICY, config.defaults);

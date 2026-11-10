@@ -17,8 +17,7 @@
   "files": [
     "dist",
     "openclaw.plugin.json",
-    "README.md",
-    "src/index.ts"
+    "README.md"
   ],
   "peerDependencies": {
     "openclaw": ">=2026.10.10"
@@ -29,6 +28,7 @@
     }
   },
   "devDependencies": {
+    "@types/node": "^26.6.6",
     "clawhub": "0.25.1",
     "openclaw": "2026.11.2",
     "typescript": "7.0.2",
@@ -36,7 +36,7 @@
   },
   "openclaw": {
     "extensions": [
-      "./src/index.ts"
+      "./dist/index.js"
     ],
     "compat": {
       "pluginApi": ">=2026.10.10"

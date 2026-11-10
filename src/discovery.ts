@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import type { CapabilityDiscoveryConfig } from "./config.js";
+import { ROUTER_BASE_URL } from "./identifiers.js";
 
-export const ROUTER_BASE_URL = "https://router-api.0g.ai/v1";
+export { ROUTER_BASE_URL };
 
 export type RemoteModelCapability = {
   id: string;
@@ -34,6 +35,18 @@ let modelCache: Timed<Map<string, RemoteModelCapability>> | undefined;
 let modelRefreshInFlight: Promise<void> | undefined;
 const providerCache = new Map<string, Timed<RemoteProviderCapability[]>>();
 const providerRefreshInFlight = new Map<string, Promise<RemoteProviderCapability[]>>();
+const MAX_PROVIDER_CACHE_ENTRIES = 128;
+
+function pruneProviderCache(now = Date.now()): void {
+  for (const [key, cached] of providerCache) {
+    if (cached.expiresAt <= now) providerCache.delete(key);
+  }
+  while (providerCache.size >= MAX_PROVIDER_CACHE_ENTRIES) {
+    const oldest = providerCache.keys().next().value;
+    if (oldest === undefined) break;
+    providerCache.delete(oldest);
+  }
+}
 
 export function resetDiscoveryCachesForTests(): void {
   modelCache = undefined;
@@ -115,6 +128,7 @@ async function refreshProviders(
   const cacheKey = providerCacheKey(modelId, apiKey);
   const existing = providerRefreshInFlight.get(cacheKey);
   if (existing) return existing;
+  pruneProviderCache();
   const refresh = (async () => {
     const url = `${ROUTER_BASE_URL}/providers?model=${encodeURIComponent(modelId)}`;
     const raw = await fetchJson(url, { headers: { Authorization: `Bearer ${apiKey}` } }, config.timeoutMs) as { data?: RemoteProviderCapability[] } | RemoteProviderCapability[];
@@ -137,6 +151,7 @@ export async function discoverProviders(
 ): Promise<RemoteProviderCapability[]> {
   if (!config.enabled) return [];
   const now = Date.now();
+  pruneProviderCache(now);
   const cached = providerCache.get(providerCacheKey(modelId, apiKey));
   if (cached && cached.expiresAt > now) return cached.value;
   return refreshProviders(modelId, apiKey, config);

@@ -33,6 +33,12 @@ describe("plugin policy resolution", () => {
     expect(policy.teeVerification).toEqual({ enabled: true, required: true });
   });
 
+  it("normalizes model ids for overrides and transport selection", () => {
+    const config = parsePluginConfig({ models: { "GLM-5.3-FLASH": { transport: "responses" } } });
+    expect(resolveModelPolicy(config, "glm-5.3-flash").transport).toBe("responses");
+    expect(resolveTransport("GLM-5.3-FLASH", "auto").transport).toBe("chat-completions");
+  });
+
   it("lets a model opt out of global defaults", () => {
     const config = parsePluginConfig({
       defaults: {

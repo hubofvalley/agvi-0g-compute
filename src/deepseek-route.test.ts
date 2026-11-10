@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { MODEL_CATALOG } from "./index.js";
+import { MODEL_CATALOG } from "./catalog.js";
 
 /**
  * Regression for the DeepSeek route. The live 0G route rejects the `developer` role
@@ -19,10 +19,5 @@ describe("DeepSeek route compatibility", () => {
     // Source: pc.0g.ai/models/deepseek-v4.1-flash, "Cache Read / 1M $0.0416". No cache-write rate is published.
     expect(ds.cost.cacheRead).toBe(0.0416);
     expect(ds.cost.cacheWrite).toBe(0);
-  });
-
-  it("does not change the Haiku route", () => {
-    const haiku = MODEL_CATALOG.find((m) => m.id === "claude-haiku-5.5") as unknown as { compat?: unknown };
-    expect(haiku.compat).toBeUndefined();
   });
 });

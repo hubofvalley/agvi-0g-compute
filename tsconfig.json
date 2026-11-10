@@ -10,9 +10,14 @@
     "skipLibCheck": true
   },
   "include": [
+    "src/catalog.ts",
+    "src/config.ts",
+    "src/discovery.ts",
+    "src/identifiers.ts",
     "src/index.ts",
     "src/pricing.ts",
-    "src/tools/*.ts"
+    "src/tools/*.ts",
+    "src/transport.ts"
   ],
   "exclude": [
     "src/**/*.test.ts"

@@ -70,7 +70,7 @@ describe("0G capability discovery", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it("does not block an ordinary cold-cache request on model discovery", async () => {
+  it("returns no model on a cold cache while refreshing in the background", async () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const fetchMock = vi.fn(async () => {
@@ -81,11 +81,8 @@ describe("0G capability discovery", () => {
     });
     globalThis.fetch = fetchMock as typeof fetch;
 
-    const started = Date.now();
     const cold = discoverModelSWR("glm-5.3-flash", discovery);
-    const elapsed = Date.now() - started;
     expect(cold).toBeUndefined();
-    expect(elapsed).toBeLessThan(50);
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
     release();

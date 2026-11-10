@@ -1,3 +1,4 @@
+import { normalizeModelId } from "./identifiers.js";
 export const BUILTIN_POLICY = {
     transport: "auto",
     routing: {
@@ -71,7 +72,7 @@ export function parsePluginConfig(raw) {
     for (const [id, value] of Object.entries(rawModels ?? {})) {
         const entry = asRecord(value);
         if (entry)
-            models[id] = entry;
+            models[normalizeModelId(id)] = entry;
     }
     return {
         ...(defaults ? { defaults } : {}),
@@ -79,7 +80,8 @@ export function parsePluginConfig(raw) {
     };
 }
 export function resolveModelPolicy(config, modelId) {
-    const modelOverride = config.models?.[modelId];
+    const normalizedModelId = normalizeModelId(modelId);
+    const modelOverride = config.models?.[normalizedModelId];
     const base = modelOverride?.inheritDefaults === false
         ? copyPolicy(BUILTIN_POLICY)
         : applyOverride(BUILTIN_POLICY, config.defaults);

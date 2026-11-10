@@ -9,8 +9,10 @@
  */
 import { readFileSync, writeFileSync, renameSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { MODEL_CATALOG } from "../index.js";
-const PROVIDER = "agvi-0g-compute";
+import { pathToFileURL } from "node:url";
+import { MODEL_CATALOG } from "../catalog.js";
+import { PROVIDER_ID } from "../identifiers.js";
+const PROVIDER = PROVIDER_ID;
 function projectModel(model) {
     return {
         ...model,
@@ -42,5 +44,5 @@ function main() {
     renameSync(tmp, configPath);
     process.stdout.write(`Synchronized ${MODEL_CATALOG.length} ${PROVIDER} model projections.\n`);
 }
-if (process.argv[1]?.endsWith("sync-config-stubs.js"))
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href)
     main();

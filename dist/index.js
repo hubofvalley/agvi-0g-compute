@@ -2,21 +2,20 @@ import { definePluginEntry, } from "openclaw/plugin-sdk/plugin-entry";
 import { createProviderApiKeyAuthMethod } from "openclaw/plugin-sdk/provider-auth";
 import { parsePluginConfig, resolveModelPolicy, } from "./config.js";
 import { discoverModel, discoverModelSWR, discoverProviders, } from "./discovery.js";
+import { getModelMetadata, MODEL_CATALOG } from "./catalog.js";
+import { MODEL_IDS, normalizeModelId, PROVIDER_ID, ROUTER_BASE_URL } from "./identifiers.js";
 import { resolveTransport } from "./transport.js";
+export { MODEL_CATALOG };
 /**
  * AGVI's first-party, direct connection to the 0G Compute Router.
- * Keep model metadata on this provider, not on the local 9router proxy.
+ * Keep model metadata on this provider, not on a local proxy.
  * Haiku uses the native Anthropic Messages adapter to avoid the OpenAI SSE
- * translation that repeatedly failed in 9router subagent sessions.
+ * translation that repeatedly failed in local subagent sessions.
  */
-const PROVIDER = "agvi-0g-compute";
-const BASE_URL = "https://router-api.0g.ai/v1";
-const HAIKU = "claude-haiku-5.5";
-const DEEPSEEK = "deepseek-v4.1-flash";
-const QWEN = "qwen3.7-flash";
-const GLM = "glm-5.3-flash";
-const GLM_FULL = "glm-5.3";
-const STATIC_TEE_CAPABLE_MODELS = new Set([GLM_FULL]);
+const PROVIDER = PROVIDER_ID;
+const HAIKU = MODEL_IDS.HAIKU;
+const PINNED_PROVIDER_FALLBACK_PREFIX = "0G pinned provider fallback";
+const CIRCUIT_OPEN_ERROR_PREFIX = "0G route temporarily quarantined after repeated stalled streams";
 /**
  * Provider transport request budget. This does NOT replace OpenClaw's generic
  * first-event/idle watchdog (currently 120s for ordinary cloud-model turns).
@@ -43,7 +42,20 @@ export function setPluginConfigForTests(raw) {
     runtimePluginConfig = parsePluginConfig(raw);
 }
 function routeKey(modelId) {
-    return (modelId ?? "unknown").trim().toLowerCase();
+    return normalizeModelId(modelId);
+}
+function requiresCapabilityDiscovery(policy) {
+    return policy.capabilityDiscovery.enabled && (policy.trust.mode === "private" ||
+        policy.teeVerification.required ||
+        Boolean(policy.routing.address) ||
+        Boolean(policy.routing.identity));
+}
+function canDowngradePrivate(policy) {
+    return policy.trust.mode === "private" &&
+        policy.trust.allowDowngrade &&
+        !policy.teeVerification.required &&
+        !policy.routing.address &&
+        !policy.routing.identity;
 }
 function timeoutLike(error) {
     const message = error instanceof Error ? error.message : String(error ?? "");
@@ -86,7 +98,7 @@ export function getRouteHealth(modelId, now = Date.now()) {
 }
 function circuitOpenError(modelId, openUntil) {
     const retryAfterSeconds = Math.max(1, Math.ceil((openUntil - Date.now()) / 1_000));
-    return new Error(`0G route temporarily quarantined after repeated stalled streams for ${modelId}; retry after about ${retryAfterSeconds}s`);
+    return new Error(`${CIRCUIT_OPEN_ERROR_PREFIX} for ${modelId}; retry after about ${retryAfterSeconds}s`);
 }
 function headerValue(headers, name) {
     const wanted = name.toLowerCase();
@@ -103,10 +115,7 @@ function shortProvider(value) {
 }
 async function resolveRequestPolicy(model, options) {
     const policy = resolveModelPolicy(runtimePluginConfig, model.id);
-    const strictDiscovery = policy.capabilityDiscovery.enabled && (policy.trust.mode === "private" ||
-        policy.teeVerification.required ||
-        Boolean(policy.routing.address) ||
-        Boolean(policy.routing.identity));
+    const strictDiscovery = requiresCapabilityDiscovery(policy);
     let remoteModel;
     if (policy.capabilityDiscovery.enabled) {
         if (strictDiscovery) {
@@ -114,12 +123,7 @@ async function resolveRequestPolicy(model, options) {
                 remoteModel = await discoverModel(model.id, policy.capabilityDiscovery);
             }
             catch (error) {
-                const privateCanDowngrade = policy.trust.mode === "private" &&
-                    policy.trust.allowDowngrade &&
-                    !policy.teeVerification.required &&
-                    !policy.routing.address &&
-                    !policy.routing.identity;
-                if (!privateCanDowngrade && (policy.trust.mode === "private" || policy.teeVerification.required || policy.routing.address || policy.routing.identity)) {
+                if (!canDowngradePrivate(policy)) {
                     throw new Error(`0G strict model discovery failed for ${model.id}: ${error instanceof Error ? error.message : String(error)}`);
                 }
                 runtimeLogger?.warn?.(`agvi-0g-compute model discovery unavailable model=${routeKey(model.id)} error=${error instanceof Error ? error.message : String(error)}`);
@@ -134,21 +138,18 @@ async function resolveRequestPolicy(model, options) {
     const transport = resolveTransport(model.id, policy.transport, remoteModel?.supported_formats, model.api);
     let trustMode = policy.trust.mode;
     let providers = [];
-    const needsProviderDiscovery = policy.capabilityDiscovery.enabled && (trustMode === "private" ||
-        policy.teeVerification.required ||
-        Boolean(policy.routing.address) ||
-        Boolean(policy.routing.identity));
+    const needsProviderDiscovery = strictDiscovery;
     if (policy.routing.identity && !policy.routing.address) {
         throw new Error(`0G routing identity for ${model.id} requires routing.address`);
     }
     if (needsProviderDiscovery) {
         const apiKey = options?.apiKey?.trim();
         if (!apiKey) {
-            if (trustMode === "private" && policy.trust.allowDowngrade) {
+            if (canDowngradePrivate(policy)) {
                 runtimeLogger?.warn?.(`agvi-0g-compute private discovery unavailable without request API key; downgrading model=${routeKey(model.id)} to key-default`);
                 trustMode = "key-default";
             }
-            else if (trustMode === "private" || policy.teeVerification.required) {
+            else if (policy.trust.mode === "private" || policy.teeVerification.required || policy.routing.address || policy.routing.identity) {
                 throw new Error(`0G capability discovery for ${model.id} requires the resolved request API key`);
             }
         }
@@ -157,11 +158,11 @@ async function resolveRequestPolicy(model, options) {
                 providers = await discoverProviders(model.id, apiKey, policy.capabilityDiscovery);
             }
             catch (error) {
-                if (trustMode === "private" && policy.trust.allowDowngrade) {
+                if (canDowngradePrivate(policy)) {
                     runtimeLogger?.warn?.(`agvi-0g-compute private provider discovery failed; downgrading model=${routeKey(model.id)} to key-default`);
                     trustMode = "key-default";
                 }
-                else if (trustMode === "private" || policy.teeVerification.required) {
+                else if (policy.trust.mode === "private" || policy.teeVerification.required || policy.routing.address || policy.routing.identity) {
                     throw new Error(`0G provider discovery failed for ${model.id}: ${error instanceof Error ? error.message : String(error)}`);
                 }
                 else {
@@ -170,10 +171,10 @@ async function resolveRequestPolicy(model, options) {
             }
         }
     }
-    if (trustMode === "private" && providers.length) {
+    if (trustMode === "private" && needsProviderDiscovery) {
         const privateHealthy = providers.some((row) => row.trust_mode === "private" && row.is_healthy !== false);
         if (!privateHealthy) {
-            if (policy.trust.allowDowngrade) {
+            if (canDowngradePrivate(policy)) {
                 runtimeLogger?.warn?.(`agvi-0g-compute private route unavailable; downgrading model=${routeKey(model.id)} to key-default`);
                 trustMode = "key-default";
             }
@@ -193,7 +194,7 @@ async function resolveRequestPolicy(model, options) {
     }
     let teeEnabled = policy.teeVerification.enabled;
     if (teeEnabled) {
-        const teeCapable = STATIC_TEE_CAPABLE_MODELS.has(model.id) ||
+        const teeCapable = getModelMetadata(model.id)?.teeCapable === true ||
             remoteModel?.tee_attested === true ||
             Boolean(remoteModel?.verifiability) ||
             providers.some((row) => row.tee_attested === true);
@@ -326,6 +327,10 @@ export function wrapZeroGProviderStream(ctx) {
                 const e2ee = headerValue(response.headers, "x-0g-e2ee");
                 const pinnedAddress = requestPolicy.policy.routing.address;
                 const fallback = Boolean(pinnedAddress && provider && pinnedAddress.toLowerCase() !== provider.toLowerCase());
+                if (fallback && !requestPolicy.policy.routing.allowFallbacks) {
+                    cleanup();
+                    throw new Error(`${PINNED_PROVIDER_FALLBACK_PREFIX}: ${pinnedAddress} returned ${provider}`);
+                }
                 const selectedRows = provider
                     ? requestPolicy.providers.filter((row) => row.address?.toLowerCase() === provider.toLowerCase())
                     : [];
@@ -376,97 +381,6 @@ export function wrapZeroGProviderStream(ctx) {
  * Keep openclaw.plugin.json setup.providers[0].envVars in the same order (contract test enforces it).
  */
 export const ENV_VARS = ["AGVI_0G_COMPUTE_API_KEY", "ZEROG_COMPUTE_API_KEY"];
-export const MODEL_CATALOG = [
-    {
-        id: HAIKU,
-        name: "Claude Haiku 5.5 (0G Compute, native Messages)",
-        api: "anthropic-messages",
-        reasoning: true,
-        input: ["text", "image"],
-        cost: {
-            input: 0.0999,
-            output: 0.5,
-            cacheRead: 0.01,
-            cacheWrite: 0.125,
-            // The entire request, not just its excess tokens, is billed at the
-            // higher 0G rate when total input is greater than 100,000 tokens.
-            // OpenClaw ranges are half-open: [start, end).
-            tieredPricing: [
-                { range: [0, 100_001], input: 0.0999, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 },
-                { range: [100_001], input: 0.5, output: 2.5, cacheRead: 0.0499, cacheWrite: 0.625 },
-            ],
-        },
-        contextWindow: 1_000_000,
-        maxTokens: 128_000,
-    },
-    {
-        id: DEEPSEEK,
-        name: "DeepSeek V4.1 Flash (0G Compute)",
-        api: "openai-completions",
-        reasoning: true,
-        // This exact 0G listing exposes text input. Do not advertise the separate
-        // DeepSeek vision variant as an ability of this provider route.
-        input: ["text"],
-        compat: { supportsDeveloperRole: false },
-        // Verified: pc.0g.ai/models/deepseek-v4.1-flash "Cache Read / 1M $0.0416".
-        // Route caches prefixes automatically. cacheWrite has no published rate: kept 0 and treated as unknown.
-        cost: { input: 0.4166, output: 1.6666, cacheRead: 0.0416, cacheWrite: 0 },
-        contextWindow: 1_000_000,
-        // The router publishes 393,216 tokens, i.e. 384 Ki tokens.
-        maxTokens: 393_216,
-    },
-    {
-        id: QWEN,
-        name: "Qwen 3.7 Flash (0G Compute)",
-        // 0G advertises both Chat Completions and Responses. Live diagnostics on
-        // 2026-11-10 reproduced the same first-event stall on both, so keep the
-        // existing Chat Completions route rather than changing protocol without a
-        // demonstrated reliability benefit.
-        api: "openai-completions",
-        reasoning: true,
-        input: ["text"],
-        // Live /v1/models currently publishes these input/output rates. Cache
-        // pricing is not published, so zero here means "not billable by our cost
-        // estimator", not a claim that 0G cache reads/writes are free.
-        cost: { input: 0.029167, output: 0.116667, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: 1_000_000,
-        // The public listing currently omits max_completion_tokens for Qwen.
-        // Preserve AGVI's already-deployed conservative cap until 0G publishes one.
-        maxTokens: 262_144,
-    },
-    {
-        id: GLM,
-        name: "GLM 5.3 Flash (0G Compute)",
-        api: "openai-completions",
-        reasoning: true,
-        input: ["text"],
-        thinkingLevelMap: { off: null, high: "high" },
-        compat: {
-            supportsReasoningEffort: true,
-            supportedReasoningEfforts: ["high"],
-            reasoningEffortMap: { high: "high" },
-        },
-        cost: { input: 0.09015, output: 0.3153, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: 1_179_648,
-        maxTokens: 131_072,
-    },
-    {
-        id: GLM_FULL,
-        name: "GLM 5.3 (0G Compute, TEE-capable)",
-        api: "openai-completions",
-        reasoning: true,
-        input: ["text"],
-        thinkingLevelMap: { high: "high" },
-        compat: {
-            supportsReasoningEffort: true,
-            supportedReasoningEfforts: ["high"],
-            reasoningEffortMap: { high: "high" },
-        },
-        cost: { input: 1.4, output: 4.4, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: 1_179_648,
-        maxTokens: 131_072,
-    },
-];
 export default definePluginEntry({
     id: PROVIDER,
     name: "AGVI 0G Compute",
@@ -503,7 +417,7 @@ export default definePluginEntry({
                         return null;
                     return {
                         provider: {
-                            baseUrl: BASE_URL,
+                            baseUrl: ROUTER_BASE_URL,
                             apiKey,
                             api: "openai-completions",
                             timeoutSeconds: DEFAULT_REQUEST_TIMEOUT_SECONDS,
@@ -525,28 +439,10 @@ export default definePluginEntry({
                 };
             },
             resolveThinkingProfile: ({ modelId }) => {
-                const id = routeKey(modelId);
-                // 0G publishes GLM-5.3-Flash as deep-thinking-always-on and the live
-                // route accepts `reasoning_effort: high`. Expose that contract to
-                // OpenClaw explicitly so a normal `thinking: high` subagent setting is
-                // not rejected by generic OpenAI-compatible heuristics.
-                if (id === GLM) {
-                    return {
-                        levels: [{ id: "high", label: "always on" }],
-                        defaultLevel: "high",
-                    };
-                }
-                // Full GLM-5.3 advertises reasoning_effort but can be served by more
-                // than one backend. Keep the public contract conservative: high is the
-                // one live-tested reasoning level; off remains available for providers
-                // that honor non-thinking mode.
-                if (id === GLM_FULL) {
-                    return {
-                        levels: [{ id: "off" }, { id: "high" }],
-                        defaultLevel: "high",
-                    };
-                }
-                return undefined;
+                const profile = getModelMetadata(modelId)?.thinkingProfile;
+                return profile
+                    ? { levels: profile.levels.map((level) => ({ ...level })), defaultLevel: profile.defaultLevel }
+                    : undefined;
             },
             wrapStreamFn: wrapZeroGProviderStream,
             wrapSimpleCompletionStreamFn: wrapZeroGProviderStream,
@@ -558,7 +454,9 @@ export default definePluginEntry({
                     return "format";
                 // Circuit-open is deliberate fail-fast protection; do not immediately
                 // re-enter the same unhealthy route via the transient retry loop.
-                if (/0G route temporarily quarantined after repeated stalled streams/i.test(errorMessage))
+                if (errorMessage.includes(CIRCUIT_OPEN_ERROR_PREFIX))
+                    return "format";
+                if (errorMessage.includes(PINNED_PROVIDER_FALLBACK_PREFIX))
                     return "format";
                 return undefined;
             },

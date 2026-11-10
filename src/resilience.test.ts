@@ -125,9 +125,7 @@ describe("0G transport hardening", () => {
     expect(getRouteHealth("qwen3.7-flash").consecutiveStalls).toBe(1);
 
     const observed = await wrapped(model, {} as never, {});
-    for await (const _event of observed) {
-      // Consume the stream so the progress observer sees the real delta.
-    }
+    for await (const _event of observed) {}
     expect(getRouteHealth("qwen3.7-flash").consecutiveStalls).toBe(0);
   });
 
@@ -136,17 +134,69 @@ describe("0G transport hardening", () => {
     const wrapped = wrapZeroGProviderStream({ streamFn: base } as unknown as ProviderWrapStreamFnContext)!;
     const controller = new AbortController();
     const observed = await wrapped(testModel(), {} as never, { signal: controller.signal });
-    for await (const _event of observed) {
-      // consume
-    }
+    for await (const _event of observed) {}
     controller.abort(new Error("LLM idle timeout (120s): no response from model"));
     expect(getRouteHealth("qwen3.7-flash").consecutiveStalls).toBe(0);
   });
 
-  it("classifies malformed tool payloads and an open breaker as non-transient format failures", () => {
+  it("records a timeout thrown while consuming the provider stream", async () => {
+    const base = vi.fn(() => ({
+      result: async () => finalMessage(),
+      async *[Symbol.asyncIterator]() {
+        throw new Error("timed out");
+      },
+    }) as never);
+    const wrapped = wrapZeroGProviderStream({ streamFn: base } as unknown as ProviderWrapStreamFnContext)!;
+    const observed = await wrapped(testModel(), {} as never, {});
+
+    await expect((async () => {
+      for await (const _event of observed) {}
+    })()).rejects.toThrow("timed out");
+    expect(getRouteHealth("qwen3.7-flash").consecutiveStalls).toBe(1);
+  });
+
+  it("recovers a quarantined route after the cooldown and real progress", async () => {
+    vi.useFakeTimers();
+    try {
+      const base = vi.fn(() => streamWith([{ type: "thinking_delta", contentIndex: 0, delta: "x", partial: finalMessage() }]));
+      const wrapped = wrapZeroGProviderStream({ streamFn: base } as unknown as ProviderWrapStreamFnContext)!;
+      const model = testModel();
+
+      for (let i = 0; i < CIRCUIT_BREAKER_FAILURES; i += 1) {
+        const controller = new AbortController();
+        await wrapped(model, {} as never, { signal: controller.signal });
+        controller.abort(new Error("LLM idle timeout (120s): no response from model"));
+      }
+      expect(getRouteHealth("qwen3.7-flash").open).toBe(true);
+
+      vi.advanceTimersByTime(CIRCUIT_BREAKER_COOLDOWN_MS + 1);
+      const recovered = await wrapped(model, {} as never, {});
+      for await (const _event of recovered) {}
+      expect(base).toHaveBeenCalledTimes(CIRCUIT_BREAKER_FAILURES + 1);
+      expect(getRouteHealth("qwen3.7-flash").consecutiveStalls).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("classifies malformed tool payloads and an actual open breaker as non-transient format failures", async () => {
+    const base = vi.fn(() => streamWith([]));
+    const wrapped = wrapZeroGProviderStream({ streamFn: base } as unknown as ProviderWrapStreamFnContext)!;
+    for (let i = 0; i < CIRCUIT_BREAKER_FAILURES; i += 1) {
+      const controller = new AbortController();
+      await wrapped(testModel(), {} as never, { signal: controller.signal });
+      controller.abort(new Error("LLM idle timeout (120s): no response from model"));
+    }
+
+    let circuitMessage = "";
+    try {
+      await wrapped(testModel(), {} as never, {});
+    } catch (error) {
+      circuitMessage = error instanceof Error ? error.message : String(error);
+    }
     const classify = provider().classifyFailoverReason!;
     expect(classify({ errorMessage: "Provider returned an incomplete or malformed tool call" })).toBe("format");
-    expect(classify({ errorMessage: "0G route temporarily quarantined after repeated stalled streams for qwen3.7-flash" })).toBe("format");
+    expect(classify({ errorMessage: circuitMessage })).toBe("format");
     expect(classify({ errorMessage: "socket reset" })).toBeUndefined();
   });
 });

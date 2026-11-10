@@ -1,6 +1,6 @@
 # AGVI 0G Compute (OpenClaw provider)
 
-An OpenClaw-native adapter for the official 0G Compute Router (`https://router-api.0g.ai/v1`). It is independent from the local 9router proxy and owns 0G-specific model metadata, transport selection, provider routing, trust policy, TEE request shaping, discovery, observability, and route resilience.
+An OpenClaw-native adapter for the official 0G Compute Router (`https://router-api.0g.ai/v1`). It is independent from any local proxy and owns 0G-specific model metadata, transport selection, provider routing, trust policy, TEE request shaping, discovery, observability, and route resilience.
 
 ## Models and automatic transport
 

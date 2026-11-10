@@ -10,37 +10,25 @@
  */
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+import { getModelMetadata, MODEL_CATALOG } from "../catalog.js";
+import { normalizeModelId as normalizeCatalogModelId } from "../identifiers.js";
 import { estimateCost } from "../pricing.js";
 export const PROVIDER_PREFIX = "agvi-0g-compute/";
-/** Rate facts that are not verified against an authoritative source yet. */
-export const UNVERIFIED_RATE_NOTES = {
-    "claude-haiku-5.5": [
-        "cacheRead rate not in public router listing (unverified)",
-        "tieredPricing above 100k input not in public router listing (unverified)",
-    ],
-    "deepseek-v4.1-flash": [
-        "cacheWrite has no published rate (unknown, not free); cacheRead verified at $0.0416/M",
-    ],
-};
-/** Cache rates stored as 0 placeholders: treated as UNKNOWN in estimates, never as free. */
-const ZERO_IS_UNKNOWN = {
-    "deepseek-v4.1-flash": ["cacheWrite"],
-};
 function effectiveCost(modelId, cost) {
-    const unknown = ZERO_IS_UNKNOWN[modelId] ?? [];
+    const unknown = getModelMetadata(modelId)?.unknownRateClasses ?? [];
     if (unknown.length === 0)
         return cost;
     const copy = { ...cost };
     for (const cls of unknown)
-        if (copy[cls] === 0)
-            delete copy[cls];
+        delete copy[cls];
     return copy;
 }
 const CLASSES = ["input", "output", "cacheRead", "cacheWrite"];
 function normalizeModelId(raw) {
     if (typeof raw !== "string")
         return undefined;
-    return raw.startsWith(PROVIDER_PREFIX) ? raw.slice(PROVIDER_PREFIX.length) : raw;
+    const id = raw.startsWith(PROVIDER_PREFIX) ? raw.slice(PROVIDER_PREFIX.length) : raw;
+    return normalizeCatalogModelId(id);
 }
 function numericUsage(raw) {
     if (!raw || typeof raw !== "object" || Array.isArray(raw))
@@ -102,7 +90,7 @@ export function buildUsageReport(jsonlText, catalog) {
                 tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
                 estimatedUsd: 0,
                 unknownRateClasses: [],
-                notes: entry ? (UNVERIFIED_RATE_NOTES[modelId] ?? []) : ["not in plugin catalog: no rate applied"],
+                notes: entry ? [...(getModelMetadata(modelId)?.rateNotes ?? [])] : ["not in plugin catalog: no rate applied"],
             };
             byModel.set(label, report);
         }
@@ -148,8 +136,6 @@ async function main(argv) {
         process.exitCode = 2;
         return;
     }
-    // Lazy import keeps the pure functions above free of the OpenClaw SDK import.
-    const { MODEL_CATALOG } = await import("../index.js");
     const report = buildUsageReport(readFileSync(file, "utf8"), MODEL_CATALOG);
     process.stdout.write(argv.includes("--json") ? `${JSON.stringify(report, null, 2)}\n` : `${formatUsageReport(report)}\n`);
 }

@@ -1,6 +1,8 @@
-import type { ZeroGTransport } from "./config.js";
+import { MODEL_METADATA } from "./catalog.js";
+import { normalizeModelId } from "./identifiers.js";
+import type { ConcreteZeroGTransport, ZeroGTransport } from "./config.js";
 
-export type ConcreteZeroGTransport = Exclude<ZeroGTransport, "auto">;
+export type { ConcreteZeroGTransport };
 
 export const TRANSPORT_TO_API = {
   "chat-completions": "openai-completions",
@@ -20,21 +22,13 @@ const API_TO_TRANSPORT: Record<string, ConcreteZeroGTransport> = {
   "openai-responses": "responses",
 };
 
-const AUTO_PREFERENCE: Record<string, ConcreteZeroGTransport[]> = {
-  "claude-haiku-5.5": ["messages", "chat-completions", "responses"],
-  "deepseek-v4.1-flash": ["chat-completions", "responses", "messages"],
-  "qwen3.7-flash": ["chat-completions", "responses", "messages"],
-  "glm-5.3-flash": ["chat-completions", "messages", "responses"],
-  "glm-5.3": ["chat-completions", "messages", "responses"],
-};
+const AUTO_PREFERENCE: Record<string, ConcreteZeroGTransport[]> = Object.fromEntries(
+  Object.entries(MODEL_METADATA).map(([id, metadata]) => [id, [...metadata.preferredTransports]]),
+);
 
-export const STATIC_SUPPORTED_FORMATS: Record<string, string[]> = {
-  "claude-haiku-5.5": ["openai", "anthropic"],
-  "deepseek-v4.1-flash": ["openai", "responses"],
-  "qwen3.7-flash": ["openai", "responses"],
-  "glm-5.3-flash": ["openai", "anthropic", "responses"],
-  "glm-5.3": ["openai", "responses", "anthropic"],
-};
+export const STATIC_SUPPORTED_FORMATS: Record<string, string[]> = Object.fromEntries(
+  Object.entries(MODEL_METADATA).map(([id, metadata]) => [id, [...metadata.supportedFormats]]),
+);
 
 export type ResolvedTransport = {
   transport: ConcreteZeroGTransport;
@@ -52,7 +46,8 @@ export function resolveTransport(
   remoteFormats?: readonly string[],
   currentApi?: string,
 ): ResolvedTransport {
-  const formats = remoteFormats?.length ? remoteFormats : STATIC_SUPPORTED_FORMATS[modelId];
+  const normalizedModelId = normalizeModelId(modelId);
+  const formats = remoteFormats?.length ? remoteFormats : STATIC_SUPPORTED_FORMATS[normalizedModelId];
   if (requested !== "auto") {
     if (!supports(requested, formats)) {
       throw new Error(
@@ -62,7 +57,7 @@ export function resolveTransport(
     return { transport: requested, api: TRANSPORT_TO_API[requested], source: "explicit" };
   }
 
-  const preferred = AUTO_PREFERENCE[modelId] ?? [];
+  const preferred = AUTO_PREFERENCE[normalizedModelId] ?? [];
   for (const transport of preferred) {
     if (supports(transport, formats)) return { transport, api: TRANSPORT_TO_API[transport], source: "auto" };
   }

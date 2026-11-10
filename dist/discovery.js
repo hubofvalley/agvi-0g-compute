@@ -1,9 +1,23 @@
 import { createHash } from "node:crypto";
-export const ROUTER_BASE_URL = "https://router-api.0g.ai/v1";
+import { ROUTER_BASE_URL } from "./identifiers.js";
+export { ROUTER_BASE_URL };
 let modelCache;
 let modelRefreshInFlight;
 const providerCache = new Map();
 const providerRefreshInFlight = new Map();
+const MAX_PROVIDER_CACHE_ENTRIES = 128;
+function pruneProviderCache(now = Date.now()) {
+    for (const [key, cached] of providerCache) {
+        if (cached.expiresAt <= now)
+            providerCache.delete(key);
+    }
+    while (providerCache.size >= MAX_PROVIDER_CACHE_ENTRIES) {
+        const oldest = providerCache.keys().next().value;
+        if (oldest === undefined)
+            break;
+        providerCache.delete(oldest);
+    }
+}
 export function resetDiscoveryCachesForTests() {
     modelCache = undefined;
     modelRefreshInFlight = undefined;
@@ -73,6 +87,7 @@ async function refreshProviders(modelId, apiKey, config) {
     const existing = providerRefreshInFlight.get(cacheKey);
     if (existing)
         return existing;
+    pruneProviderCache();
     const refresh = (async () => {
         const url = `${ROUTER_BASE_URL}/providers?model=${encodeURIComponent(modelId)}`;
         const raw = await fetchJson(url, { headers: { Authorization: `Bearer ${apiKey}` } }, config.timeoutMs);
@@ -92,6 +107,7 @@ export async function discoverProviders(modelId, apiKey, config) {
     if (!config.enabled)
         return [];
     const now = Date.now();
+    pruneProviderCache(now);
     const cached = providerCache.get(providerCacheKey(modelId, apiKey));
     if (cached && cached.expiresAt > now)
         return cached.value;
