@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProviderWrapStreamFnContext } from "openclaw/plugin-sdk/plugin-entry";
 import { resetDiscoveryCachesForTests } from "./discovery.js";
 import { setPluginConfigForTests, wrapZeroGProviderStream } from "./index.js";
@@ -30,7 +30,13 @@ function model(id: string) {
 }
 
 describe("0G routing / trust request shaping", () => {
+  const originalFetch = globalThis.fetch;
+
   beforeEach(() => resetDiscoveryCachesForTests());
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
 
   it("injects provider routing headers and preserves caller headers", async () => {
     setPluginConfigForTests({
@@ -110,5 +116,76 @@ describe("0G routing / trust request shaping", () => {
     });
     const wrapped = wrapZeroGProviderStream({ streamFn: base } as unknown as ProviderWrapStreamFnContext)!;
     await expect(wrapped(model("glm-5.3"), {} as never, {})).rejects.toThrow(/did not return sealed E2EE/);
+  });
+
+  it("does not delay an ordinary inference while background model discovery is pending", async () => {
+    setPluginConfigForTests({
+      defaults: {
+        capabilityDiscovery: { enabled: true, ttlSeconds: 300, timeoutMs: 5_000 },
+        observability: { enabled: false },
+      },
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    globalThis.fetch = vi.fn(async () => {
+      await gate;
+      return new Response(JSON.stringify({
+        data: [{ id: "glm-5.3-flash", supported_formats: ["openai", "responses", "anthropic"] }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    const base = vi.fn((effectiveModel) => stream(effectiveModel.id));
+    const wrapped = wrapZeroGProviderStream({ streamFn: base } as unknown as ProviderWrapStreamFnContext)!;
+    const pending = wrapped(model("glm-5.3-flash"), {} as never, {});
+    const winner = await Promise.race([
+      pending.then(() => "inference"),
+      new Promise<string>((resolve) => setTimeout(() => resolve("timeout"), 50)),
+    ]);
+    expect(winner).toBe("inference");
+    expect(base).toHaveBeenCalledTimes(1);
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  it("keeps private trust on the fresh blocking discovery path", async () => {
+    setPluginConfigForTests({
+      defaults: {
+        capabilityDiscovery: { enabled: true, ttlSeconds: 300, timeoutMs: 5_000 },
+        observability: { enabled: false },
+      },
+      models: {
+        "glm-5.3": {
+          trust: { mode: "private", allowDowngrade: false },
+        },
+      },
+    });
+    let releaseModels!: () => void;
+    const modelGate = new Promise<void>((resolve) => { releaseModels = resolve; });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/models")) {
+        await modelGate;
+        return new Response(JSON.stringify({
+          data: [{ id: "glm-5.3", supported_formats: ["openai", "responses", "anthropic"], tee_attested: true }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({
+        data: [{ address: "0xprivate", is_healthy: true, trust_mode: "private", tee_attested: true }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const base = vi.fn((effectiveModel) => stream(effectiveModel.id));
+    const wrapped = wrapZeroGProviderStream({ streamFn: base } as unknown as ProviderWrapStreamFnContext)!;
+    let settled = false;
+    const pending = wrapped(model("glm-5.3"), {} as never, { apiKey: "strict-test-key" }).finally(() => { settled = true; });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(settled).toBe(false);
+    expect(base).not.toHaveBeenCalled();
+
+    releaseModels();
+    await pending;
+    expect(base).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

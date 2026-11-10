@@ -1,7 +1,7 @@
 import { definePluginEntry, } from "openclaw/plugin-sdk/plugin-entry";
 import { createProviderApiKeyAuthMethod } from "openclaw/plugin-sdk/provider-auth";
 import { parsePluginConfig, resolveModelPolicy, } from "./config.js";
-import { discoverModel, discoverProviders, } from "./discovery.js";
+import { discoverModel, discoverModelSWR, discoverProviders, } from "./discovery.js";
 import { resolveTransport } from "./transport.js";
 /**
  * AGVI's first-party, direct connection to the 0G Compute Router.
@@ -103,20 +103,39 @@ function shortProvider(value) {
 }
 async function resolveRequestPolicy(model, options) {
     const policy = resolveModelPolicy(runtimePluginConfig, model.id);
+    const strictDiscovery = policy.capabilityDiscovery.enabled && (policy.trust.mode === "private" ||
+        policy.teeVerification.required ||
+        Boolean(policy.routing.address) ||
+        Boolean(policy.routing.identity));
     let remoteModel;
     if (policy.capabilityDiscovery.enabled) {
-        try {
-            remoteModel = await discoverModel(model.id, policy.capabilityDiscovery);
+        if (strictDiscovery) {
+            try {
+                remoteModel = await discoverModel(model.id, policy.capabilityDiscovery);
+            }
+            catch (error) {
+                const privateCanDowngrade = policy.trust.mode === "private" &&
+                    policy.trust.allowDowngrade &&
+                    !policy.teeVerification.required &&
+                    !policy.routing.address &&
+                    !policy.routing.identity;
+                if (!privateCanDowngrade && (policy.trust.mode === "private" || policy.teeVerification.required || policy.routing.address || policy.routing.identity)) {
+                    throw new Error(`0G strict model discovery failed for ${model.id}: ${error instanceof Error ? error.message : String(error)}`);
+                }
+                runtimeLogger?.warn?.(`agvi-0g-compute model discovery unavailable model=${routeKey(model.id)} error=${error instanceof Error ? error.message : String(error)}`);
+            }
         }
-        catch (error) {
-            runtimeLogger?.warn?.(`agvi-0g-compute model discovery unavailable model=${routeKey(model.id)} error=${error instanceof Error ? error.message : String(error)}`);
+        else {
+            remoteModel = discoverModelSWR(model.id, policy.capabilityDiscovery, (error) => {
+                runtimeLogger?.debug?.(`agvi-0g-compute background model discovery failed model=${routeKey(model.id)} error=${error instanceof Error ? error.message : String(error)}`);
+            });
         }
     }
     const transport = resolveTransport(model.id, policy.transport, remoteModel?.supported_formats, model.api);
     let trustMode = policy.trust.mode;
     let providers = [];
     const needsProviderDiscovery = policy.capabilityDiscovery.enabled && (trustMode === "private" ||
-        policy.teeVerification.enabled ||
+        policy.teeVerification.required ||
         Boolean(policy.routing.address) ||
         Boolean(policy.routing.identity));
     if (policy.routing.identity && !policy.routing.address) {

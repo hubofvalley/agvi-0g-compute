@@ -98,7 +98,9 @@ With discovery enabled, the plugin caches:
 - public `/v1/models`: formats, parameters, context/output limits, provider count, TEE metadata;
 - authenticated `/v1/providers?model=...`: provider health, address/identity, trust mode and TEE attributes.
 
-The default cache TTL is 300 seconds and the discovery request timeout is 5 seconds. Ordinary standard/key-default inference can continue using static plugin metadata if discovery is temporarily unavailable. Security-sensitive private/required-TEE requests fail closed unless an explicit downgrade policy permits otherwise.
+The default cache TTL is 300 seconds and the discovery request timeout is 5 seconds. Ordinary standard/key-default inference uses stale-while-revalidate semantics: a fresh cache hit is returned immediately; an expired entry is served stale while one deduplicated refresh runs in the background; and a cold miss starts background discovery while inference immediately falls back to plugin-owned static capabilities. This keeps discovery network I/O off the normal TTFT path.
+
+Security-sensitive paths deliberately do **not** use stale-while-revalidate. Private trust, required TEE verification, and provider address/identity pinning wait for fresh model/provider capability data and fail closed unless an explicit private-mode downgrade policy permits otherwise. Authenticated provider caches are isolated by API-key fingerprint so one credential cannot reuse another credential's provider-capability cache.
 
 ## Observability
 
