@@ -1,0 +1,161 @@
+{
+  "captured_at": "2026-11-10",
+  "source": "https://router-api.0g.ai/v1/models (public, unauthenticated)",
+  "note": "Trimmed to plugin models. Offline snapshot for tests; re-capture with catalog-compare --fetch.",
+  "data": [
+    {
+      "id": "claude-haiku-5.5",
+      "context_length": 1000000,
+      "max_completion_tokens": 128000,
+      "architecture": {
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "text"
+        ]
+      },
+      "supported_formats": [
+        "openai",
+        "anthropic"
+      ],
+      "supported_parameters": [
+        "tools",
+        "tool_choice",
+        "reasoning_effort",
+        "cache_control",
+        "system",
+        "stream",
+        "thinking"
+      ],
+      "pricing_usd": {
+        "prompt": "0.0000001",
+        "completion": "0.0000005",
+        "cache_write": "0.000000125",
+        "cache_write_1h": "0.0000002"
+      },
+      "provider_count": 1
+    },
+    {
+      "id": "deepseek-v4.1-flash",
+      "context_length": 1000000,
+      "max_completion_tokens": 393216,
+      "architecture": {
+        "input_modalities": [
+          "text"
+        ],
+        "output_modalities": [
+          "text"
+        ]
+      },
+      "supported_formats": [
+        "openai",
+        "responses"
+      ],
+      "supported_parameters": [
+        "tools",
+        "stream"
+      ],
+      "pricing_usd": {
+        "prompt": "0.000000416667",
+        "completion": "0.000001666667"
+      },
+      "provider_count": 1
+    },
+    {
+      "id": "qwen3.7-flash",
+      "context_length": 1000000,
+      "architecture": {
+        "input_modalities": [
+          "text"
+        ],
+        "output_modalities": [
+          "text"
+        ]
+      },
+      "supported_formats": [
+        "openai",
+        "responses"
+      ],
+      "supported_parameters": [
+        "tools",
+        "stream"
+      ],
+      "pricing_usd": {
+        "prompt": "0.000000029167",
+        "completion": "0.000000116667"
+      },
+      "provider_count": 1
+    },
+    {
+      "id": "glm-5.3-flash",
+      "context_length": 1179648,
+      "max_completion_tokens": 131072,
+      "architecture": {
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "text"
+        ]
+      },
+      "supported_formats": [
+        "openai",
+        "anthropic",
+        "responses"
+      ],
+      "supported_parameters": [
+        "tools",
+        "reasoning_effort",
+        "stream"
+      ],
+      "pricing_usd": {
+        "prompt": "0.00000009015",
+        "completion": "0.0000003153"
+      },
+      "provider_count": 1
+    },
+    {
+      "id": "glm-5.3",
+      "context_length": 1179648,
+      "max_completion_tokens": 131072,
+      "architecture": {
+        "input_modalities": [
+          "text"
+        ],
+        "output_modalities": [
+          "text"
+        ]
+      },
+      "supported_formats": [
+        "openai",
+        "responses",
+        "anthropic"
+      ],
+      "supported_parameters": [
+        "tools",
+        "response_format",
+        "stream",
+        "temperature",
+        "top_p",
+        "top_k",
+        "max_tokens",
+        "frequency_penalty",
+        "presence_penalty",
+        "tool_choice",
+        "chat_template_kwargs",
+        "reasoning_effort"
+      ],
+      "pricing_usd": {
+        "prompt": "0.0000014",
+        "completion": "0.0000044"
+      },
+      "provider_count": 2,
+      "verifiability": "TeeML",
+      "tee_attested": true,
+      "tee_verifier": "dstack"
+    }
+  ]
+}

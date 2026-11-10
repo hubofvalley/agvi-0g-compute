@@ -1,0 +1,548 @@
+import { definePluginEntry, } from "openclaw/plugin-sdk/plugin-entry";
+import { createProviderApiKeyAuthMethod } from "openclaw/plugin-sdk/provider-auth";
+import { parsePluginConfig, resolveModelPolicy, } from "./config.js";
+import { discoverModel, discoverProviders, } from "./discovery.js";
+import { resolveTransport } from "./transport.js";
+/**
+ * AGVI's first-party, direct connection to the 0G Compute Router.
+ * Keep model metadata on this provider, not on the local 9router proxy.
+ * Haiku uses the native Anthropic Messages adapter to avoid the OpenAI SSE
+ * translation that repeatedly failed in 9router subagent sessions.
+ */
+const PROVIDER = "agvi-0g-compute";
+const BASE_URL = "https://router-api.0g.ai/v1";
+const HAIKU = "claude-haiku-5.5";
+const DEEPSEEK = "deepseek-v4.1-flash";
+const QWEN = "qwen3.7-flash";
+const GLM = "glm-5.3-flash";
+const GLM_FULL = "glm-5.3";
+const STATIC_TEE_CAPABLE_MODELS = new Set([GLM_FULL]);
+/**
+ * Provider transport request budget. This does NOT replace OpenClaw's generic
+ * first-event/idle watchdog (currently 120s for ordinary cloud-model turns).
+ * A request can therefore still be aborted by the host before this 180s budget.
+ *
+ * Explicit operator configuration still wins: normalizeConfig only supplies
+ * this value when models.providers.agvi-0g-compute.timeoutSeconds is absent.
+ */
+export const DEFAULT_REQUEST_TIMEOUT_SECONDS = 180;
+export const DEFAULT_REQUEST_TIMEOUT_MS = DEFAULT_REQUEST_TIMEOUT_SECONDS * 1_000;
+/** Keep provider/SDK Retry-After sleeps bounded; OpenClaw still owns model retries. */
+export const DEFAULT_MAX_RETRY_DELAY_MS = 15_000;
+/**
+ * A small process-local breaker prevents a bad 0G route from consuming a long
+ * subagent run as a sequence of identical silent requests. It does not alter
+ * OpenClaw's subagent configuration or global retry policy.
+ */
+export const CIRCUIT_BREAKER_FAILURES = 2;
+export const CIRCUIT_BREAKER_COOLDOWN_MS = 120_000;
+const routeHealth = new Map();
+let runtimeLogger;
+let runtimePluginConfig = {};
+export function setPluginConfigForTests(raw) {
+    runtimePluginConfig = parsePluginConfig(raw);
+}
+function routeKey(modelId) {
+    return (modelId ?? "unknown").trim().toLowerCase();
+}
+function timeoutLike(error) {
+    const message = error instanceof Error ? error.message : String(error ?? "");
+    return /(?:idle timeout|timed out|timeout|aborted due to timeout)/i.test(message);
+}
+function recordRouteProgress(modelId) {
+    const prior = routeHealth.get(routeKey(modelId));
+    routeHealth.delete(routeKey(modelId));
+    if (prior?.consecutiveStalls) {
+        runtimeLogger?.info?.(`agvi-0g-compute route recovered model=${routeKey(modelId)} priorStalls=${prior.consecutiveStalls}`);
+    }
+}
+function isProviderProgressEvent(event) {
+    return event.type === "text_delta" ||
+        event.type === "thinking_delta" ||
+        event.type === "toolcall_delta" ||
+        event.type === "text_end" ||
+        event.type === "thinking_end" ||
+        event.type === "toolcall_start" ||
+        event.type === "toolcall_end" ||
+        event.type === "done";
+}
+function recordRouteStall(modelId, now = Date.now()) {
+    const key = routeKey(modelId);
+    const current = routeHealth.get(key) ?? { consecutiveStalls: 0, openUntil: 0 };
+    const consecutiveStalls = current.consecutiveStalls + 1;
+    routeHealth.set(key, {
+        consecutiveStalls,
+        openUntil: consecutiveStalls >= CIRCUIT_BREAKER_FAILURES ? now + CIRCUIT_BREAKER_COOLDOWN_MS : 0,
+    });
+    runtimeLogger?.warn?.(`agvi-0g-compute stalled stream model=${key} consecutive=${consecutiveStalls}` +
+        (consecutiveStalls >= CIRCUIT_BREAKER_FAILURES ? ` circuitOpenMs=${CIRCUIT_BREAKER_COOLDOWN_MS}` : ""));
+}
+export function resetRouteHealthForTests() {
+    routeHealth.clear();
+}
+export function getRouteHealth(modelId, now = Date.now()) {
+    const state = routeHealth.get(routeKey(modelId)) ?? { consecutiveStalls: 0, openUntil: 0 };
+    return { ...state, open: state.openUntil > now };
+}
+function circuitOpenError(modelId, openUntil) {
+    const retryAfterSeconds = Math.max(1, Math.ceil((openUntil - Date.now()) / 1_000));
+    return new Error(`0G route temporarily quarantined after repeated stalled streams for ${modelId}; retry after about ${retryAfterSeconds}s`);
+}
+function headerValue(headers, name) {
+    const wanted = name.toLowerCase();
+    for (const [key, value] of Object.entries(headers ?? {})) {
+        if (key.toLowerCase() === wanted)
+            return value;
+    }
+    return undefined;
+}
+function shortProvider(value) {
+    if (!value)
+        return "-";
+    return value.length > 22 ? `${value.slice(0, 10)}...${value.slice(-6)}` : value;
+}
+async function resolveRequestPolicy(model, options) {
+    const policy = resolveModelPolicy(runtimePluginConfig, model.id);
+    let remoteModel;
+    if (policy.capabilityDiscovery.enabled) {
+        try {
+            remoteModel = await discoverModel(model.id, policy.capabilityDiscovery);
+        }
+        catch (error) {
+            runtimeLogger?.warn?.(`agvi-0g-compute model discovery unavailable model=${routeKey(model.id)} error=${error instanceof Error ? error.message : String(error)}`);
+        }
+    }
+    const transport = resolveTransport(model.id, policy.transport, remoteModel?.supported_formats, model.api);
+    let trustMode = policy.trust.mode;
+    let providers = [];
+    const needsProviderDiscovery = policy.capabilityDiscovery.enabled && (trustMode === "private" ||
+        policy.teeVerification.enabled ||
+        Boolean(policy.routing.address) ||
+        Boolean(policy.routing.identity));
+    if (policy.routing.identity && !policy.routing.address) {
+        throw new Error(`0G routing identity for ${model.id} requires routing.address`);
+    }
+    if (needsProviderDiscovery) {
+        const apiKey = options?.apiKey?.trim();
+        if (!apiKey) {
+            if (trustMode === "private" && policy.trust.allowDowngrade) {
+                runtimeLogger?.warn?.(`agvi-0g-compute private discovery unavailable without request API key; downgrading model=${routeKey(model.id)} to key-default`);
+                trustMode = "key-default";
+            }
+            else if (trustMode === "private" || policy.teeVerification.required) {
+                throw new Error(`0G capability discovery for ${model.id} requires the resolved request API key`);
+            }
+        }
+        else {
+            try {
+                providers = await discoverProviders(model.id, apiKey, policy.capabilityDiscovery);
+            }
+            catch (error) {
+                if (trustMode === "private" && policy.trust.allowDowngrade) {
+                    runtimeLogger?.warn?.(`agvi-0g-compute private provider discovery failed; downgrading model=${routeKey(model.id)} to key-default`);
+                    trustMode = "key-default";
+                }
+                else if (trustMode === "private" || policy.teeVerification.required) {
+                    throw new Error(`0G provider discovery failed for ${model.id}: ${error instanceof Error ? error.message : String(error)}`);
+                }
+                else {
+                    runtimeLogger?.warn?.(`agvi-0g-compute provider discovery unavailable model=${routeKey(model.id)}`);
+                }
+            }
+        }
+    }
+    if (trustMode === "private" && providers.length) {
+        const privateHealthy = providers.some((row) => row.trust_mode === "private" && row.is_healthy !== false);
+        if (!privateHealthy) {
+            if (policy.trust.allowDowngrade) {
+                runtimeLogger?.warn?.(`agvi-0g-compute private route unavailable; downgrading model=${routeKey(model.id)} to key-default`);
+                trustMode = "key-default";
+            }
+            else {
+                throw new Error(`0G private trust mode unavailable for ${model.id}`);
+            }
+        }
+    }
+    if (policy.routing.enabled && policy.routing.address && providers.length) {
+        const pinned = providers.find((row) => row.address?.toLowerCase() === policy.routing.address?.toLowerCase() &&
+            (!policy.routing.identity || row.provider_identity === policy.routing.identity));
+        if (!pinned)
+            throw new Error(`0G pinned provider is not advertised for ${model.id}`);
+        if (pinned.is_healthy === false && !policy.routing.allowFallbacks) {
+            throw new Error(`0G pinned provider is unhealthy for ${model.id} and fallbacks are disabled`);
+        }
+    }
+    let teeEnabled = policy.teeVerification.enabled;
+    if (teeEnabled) {
+        const teeCapable = STATIC_TEE_CAPABLE_MODELS.has(model.id) ||
+            remoteModel?.tee_attested === true ||
+            Boolean(remoteModel?.verifiability) ||
+            providers.some((row) => row.tee_attested === true);
+        if (!teeCapable) {
+            if (policy.teeVerification.required) {
+                throw new Error(`0G TEE verification required but ${model.id} is not currently TEE-capable`);
+            }
+            teeEnabled = false;
+            runtimeLogger?.warn?.(`agvi-0g-compute TEE verification skipped; model is not TEE-capable model=${routeKey(model.id)}`);
+        }
+    }
+    if (policy.teeVerification.required && trustMode !== "private") {
+        throw new Error(`0G teeVerification.required for ${model.id} requires trust.mode=private`);
+    }
+    return { policy, transport, trustMode, teeEnabled, providers, remoteModel };
+}
+function observeProviderStream(source, modelId, recordTimeoutOnce, cleanup) {
+    let progressRecorded = false;
+    const markProgress = () => {
+        if (progressRecorded)
+            return;
+        progressRecorded = true;
+        recordRouteProgress(modelId);
+    };
+    const wrapped = {
+        async result() {
+            try {
+                const result = await source.result();
+                markProgress();
+                return result;
+            }
+            catch (error) {
+                recordTimeoutOnce(error);
+                throw error;
+            }
+            finally {
+                cleanup();
+            }
+        },
+        async *[Symbol.asyncIterator]() {
+            try {
+                for await (const event of source) {
+                    if (isProviderProgressEvent(event))
+                        markProgress();
+                    yield event;
+                }
+            }
+            catch (error) {
+                recordTimeoutOnce(error);
+                throw error;
+            }
+            finally {
+                cleanup();
+            }
+        },
+    };
+    return wrapped;
+}
+export function wrapZeroGProviderStream(ctx) {
+    const underlying = ctx.streamFn;
+    if (!underlying)
+        return;
+    const wrapped = async (model, context, options) => {
+        const health = getRouteHealth(model.id);
+        if (health.open) {
+            runtimeLogger?.warn?.(`agvi-0g-compute circuit open model=${routeKey(model.id)} until=${health.openUntil}`);
+            throw circuitOpenError(model.id, health.openUntil);
+        }
+        let failureRecorded = false;
+        const startedAt = Date.now();
+        const recordTimeoutOnce = (error) => {
+            if (failureRecorded || !timeoutLike(error))
+                return;
+            failureRecorded = true;
+            recordRouteStall(model.id);
+        };
+        const sourceSignal = options?.signal;
+        const onAbort = () => recordTimeoutOnce(sourceSignal?.reason);
+        if (sourceSignal?.aborted)
+            onAbort();
+        else
+            sourceSignal?.addEventListener("abort", onAbort, { once: true });
+        let cleaned = false;
+        const cleanup = () => {
+            if (cleaned)
+                return;
+            cleaned = true;
+            sourceSignal?.removeEventListener("abort", onAbort);
+        };
+        let requestPolicy;
+        try {
+            requestPolicy = await resolveRequestPolicy(model, options);
+        }
+        catch (error) {
+            cleanup();
+            throw error;
+        }
+        const effectiveModel = { ...model, api: requestPolicy.transport.api };
+        const previousOnPayload = options?.onPayload;
+        const previousOnResponse = options?.onResponse;
+        const nextHeaders = { ...(options?.headers ?? {}) };
+        if (requestPolicy.policy.routing.enabled) {
+            const routing = requestPolicy.policy.routing;
+            if (routing.address)
+                nextHeaders["X-0G-Provider-Address"] = routing.address;
+            if (routing.identity)
+                nextHeaders["X-0G-Provider-Identity"] = routing.identity;
+            if (routing.sort)
+                nextHeaders["X-0G-Provider-Sort"] = routing.sort;
+            nextHeaders["X-0G-Provider-Allow-Fallbacks"] = String(routing.allowFallbacks);
+        }
+        if (requestPolicy.trustMode === "verified" || requestPolicy.trustMode === "private") {
+            nextHeaders["X-0G-Provider-Trust-Mode"] = requestPolicy.trustMode;
+        }
+        const nextOptions = {
+            ...options,
+            headers: nextHeaders,
+            timeoutMs: options?.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
+            maxRetryDelayMs: Math.min(options?.maxRetryDelayMs ?? DEFAULT_MAX_RETRY_DELAY_MS, DEFAULT_MAX_RETRY_DELAY_MS),
+            onPayload: async (payload, payloadModel) => {
+                const prior = previousOnPayload ? await previousOnPayload(payload, payloadModel) : undefined;
+                const base = prior === undefined ? payload : prior;
+                if (!requestPolicy.teeEnabled || !base || typeof base !== "object" || Array.isArray(base))
+                    return base;
+                return { ...base, verify_tee: true };
+            },
+            onResponse: async (...args) => {
+                const [response] = args;
+                const provider = headerValue(response.headers, "x-provider") ?? headerValue(response.headers, "x-0g-provider");
+                const e2ee = headerValue(response.headers, "x-0g-e2ee");
+                const pinnedAddress = requestPolicy.policy.routing.address;
+                const fallback = Boolean(pinnedAddress && provider && pinnedAddress.toLowerCase() !== provider.toLowerCase());
+                const selectedRows = provider
+                    ? requestPolicy.providers.filter((row) => row.address?.toLowerCase() === provider.toLowerCase())
+                    : [];
+                const discoveredIdentities = [...new Set(selectedRows.map((row) => row.provider_identity).filter(Boolean))];
+                const providerIdentity = requestPolicy.policy.routing.identity ??
+                    (discoveredIdentities.length === 1 ? discoveredIdentities[0] : undefined);
+                const selectedTeeAttested = selectedRows.some((row) => row.tee_attested === true);
+                if (requestPolicy.trustMode === "private" && e2ee?.toLowerCase() !== "sealed") {
+                    cleanup();
+                    throw new Error(`0G private route for ${model.id} did not return sealed E2EE`);
+                }
+                if (requestPolicy.policy.observability.enabled) {
+                    runtimeLogger?.info?.(`agvi-0g-compute response model=${routeKey(model.id)}` +
+                        ` transport=${requestPolicy.transport.transport}` +
+                        ` trust=${requestPolicy.trustMode}` +
+                        ` status=${String(response.status)}` +
+                        ` provider=${shortProvider(provider)}` +
+                        ` identity=${providerIdentity ?? "-"}` +
+                        ` e2ee=${e2ee ?? "-"}` +
+                        ` teeRequested=${String(requestPolicy.teeEnabled)}` +
+                        ` providerTeeAttested=${String(selectedTeeAttested)}` +
+                        ` fallback=${String(fallback)}` +
+                        ` headersMs=${Date.now() - startedAt}` +
+                        (options?.requestId ? ` requestId=${options.requestId}` : ""));
+                }
+                if (previousOnResponse)
+                    await previousOnResponse(response, effectiveModel);
+            },
+        };
+        try {
+            const stream = await underlying(effectiveModel, context, nextOptions);
+            return observeProviderStream(stream, model.id, recordTimeoutOnce, cleanup);
+        }
+        catch (error) {
+            recordTimeoutOnce(error);
+            cleanup();
+            throw error;
+        }
+    };
+    // We only add provider policy around the generic transport. Keep OpenClaw's
+    // normal tool/reasoning/message compatibility wrappers active.
+    return Object.assign(wrapped, { preservesGenericCompatibility: true });
+}
+/**
+ * Accepted API-key env names, in precedence order. The first non-empty value wins.
+ * AGVI_0G_COMPUTE_API_KEY is canonical (matches openclaw.plugin.json setup.providers).
+ * ZEROG_COMPUTE_API_KEY is the legacy name (README, earlier onboarding) and stays accepted.
+ * Keep openclaw.plugin.json setup.providers[0].envVars in the same order (contract test enforces it).
+ */
+export const ENV_VARS = ["AGVI_0G_COMPUTE_API_KEY", "ZEROG_COMPUTE_API_KEY"];
+export const MODEL_CATALOG = [
+    {
+        id: HAIKU,
+        name: "Claude Haiku 5.5 (0G Compute, native Messages)",
+        api: "anthropic-messages",
+        reasoning: true,
+        input: ["text", "image"],
+        cost: {
+            input: 0.0999,
+            output: 0.5,
+            cacheRead: 0.01,
+            cacheWrite: 0.125,
+            // The entire request, not just its excess tokens, is billed at the
+            // higher 0G rate when total input is greater than 100,000 tokens.
+            // OpenClaw ranges are half-open: [start, end).
+            tieredPricing: [
+                { range: [0, 100_001], input: 0.0999, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 },
+                { range: [100_001], input: 0.5, output: 2.5, cacheRead: 0.0499, cacheWrite: 0.625 },
+            ],
+        },
+        contextWindow: 1_000_000,
+        maxTokens: 128_000,
+    },
+    {
+        id: DEEPSEEK,
+        name: "DeepSeek V4.1 Flash (0G Compute)",
+        api: "openai-completions",
+        reasoning: true,
+        // This exact 0G listing exposes text input. Do not advertise the separate
+        // DeepSeek vision variant as an ability of this provider route.
+        input: ["text"],
+        compat: { supportsDeveloperRole: false },
+        // Verified: pc.0g.ai/models/deepseek-v4.1-flash "Cache Read / 1M $0.0416".
+        // Route caches prefixes automatically. cacheWrite has no published rate: kept 0 and treated as unknown.
+        cost: { input: 0.4166, output: 1.6666, cacheRead: 0.0416, cacheWrite: 0 },
+        contextWindow: 1_000_000,
+        // The router publishes 393,216 tokens, i.e. 384 Ki tokens.
+        maxTokens: 393_216,
+    },
+    {
+        id: QWEN,
+        name: "Qwen 3.7 Flash (0G Compute)",
+        // 0G advertises both Chat Completions and Responses. Live diagnostics on
+        // 2026-11-10 reproduced the same first-event stall on both, so keep the
+        // existing Chat Completions route rather than changing protocol without a
+        // demonstrated reliability benefit.
+        api: "openai-completions",
+        reasoning: true,
+        input: ["text"],
+        // Live /v1/models currently publishes these input/output rates. Cache
+        // pricing is not published, so zero here means "not billable by our cost
+        // estimator", not a claim that 0G cache reads/writes are free.
+        cost: { input: 0.029167, output: 0.116667, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 1_000_000,
+        // The public listing currently omits max_completion_tokens for Qwen.
+        // Preserve AGVI's already-deployed conservative cap until 0G publishes one.
+        maxTokens: 262_144,
+    },
+    {
+        id: GLM,
+        name: "GLM 5.3 Flash (0G Compute)",
+        api: "openai-completions",
+        reasoning: true,
+        input: ["text"],
+        thinkingLevelMap: { off: null, high: "high" },
+        compat: {
+            supportsReasoningEffort: true,
+            supportedReasoningEfforts: ["high"],
+            reasoningEffortMap: { high: "high" },
+        },
+        cost: { input: 0.09015, output: 0.3153, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 1_179_648,
+        maxTokens: 131_072,
+    },
+    {
+        id: GLM_FULL,
+        name: "GLM 5.3 (0G Compute, TEE-capable)",
+        api: "openai-completions",
+        reasoning: true,
+        input: ["text"],
+        thinkingLevelMap: { high: "high" },
+        compat: {
+            supportsReasoningEffort: true,
+            supportedReasoningEfforts: ["high"],
+            reasoningEffortMap: { high: "high" },
+        },
+        cost: { input: 1.4, output: 4.4, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 1_179_648,
+        maxTokens: 131_072,
+    },
+];
+export default definePluginEntry({
+    id: PROVIDER,
+    name: "AGVI 0G Compute",
+    description: "Direct, protocol-aware 0G Compute inference with per-model transport, routing, trust and TEE policy.",
+    register(api) {
+        runtimeLogger = api.logger;
+        runtimePluginConfig = parsePluginConfig(api.pluginConfig);
+        api.registerProvider({
+            id: PROVIDER,
+            label: "0G Compute (direct)",
+            docsPath: "/providers/agvi-0g-compute",
+            envVars: [...ENV_VARS],
+            auth: [
+                createProviderApiKeyAuthMethod({
+                    providerId: PROVIDER,
+                    methodId: "api-key",
+                    label: "0G Compute API key",
+                    hint: "Create a router key on pc.0g.ai (never enter a wallet private key)",
+                    optionKey: "zerogComputeApiKey",
+                    flagName: "--zerog-compute-api-key",
+                    // Interactive/non-interactive onboarding prefill reads one name only; keep the legacy
+                    // name so existing scripted flows keep working. Runtime resolution accepts both names.
+                    envVar: "ZEROG_COMPUTE_API_KEY",
+                    promptMessage: "Enter your 0G Compute Router API key",
+                    defaultModel: `${PROVIDER}/${HAIKU}`,
+                    expectedProviders: [PROVIDER],
+                }),
+            ],
+            catalog: {
+                order: "simple",
+                run: async (ctx) => {
+                    const apiKey = ctx.resolveProviderApiKey(PROVIDER).apiKey;
+                    if (!apiKey)
+                        return null;
+                    return {
+                        provider: {
+                            baseUrl: BASE_URL,
+                            apiKey,
+                            api: "openai-completions",
+                            timeoutSeconds: DEFAULT_REQUEST_TIMEOUT_SECONDS,
+                            models: MODEL_CATALOG,
+                        },
+                    };
+                },
+            },
+            normalizeConfig: ({ providerConfig }) => {
+                // OpenClaw requires custom providers to declare a `models` array in the
+                // config file before plugin normalization runs. Treat those rows as
+                // validator/discovery stubs only: runtime metadata always comes from
+                // this plugin's canonical MODEL_CATALOG so stale inline limits/prices
+                // cannot silently override the adapter.
+                return {
+                    ...providerConfig,
+                    timeoutSeconds: providerConfig.timeoutSeconds ?? DEFAULT_REQUEST_TIMEOUT_SECONDS,
+                    models: MODEL_CATALOG,
+                };
+            },
+            resolveThinkingProfile: ({ modelId }) => {
+                const id = routeKey(modelId);
+                // 0G publishes GLM-5.3-Flash as deep-thinking-always-on and the live
+                // route accepts `reasoning_effort: high`. Expose that contract to
+                // OpenClaw explicitly so a normal `thinking: high` subagent setting is
+                // not rejected by generic OpenAI-compatible heuristics.
+                if (id === GLM) {
+                    return {
+                        levels: [{ id: "high", label: "always on" }],
+                        defaultLevel: "high",
+                    };
+                }
+                // Full GLM-5.3 advertises reasoning_effort but can be served by more
+                // than one backend. Keep the public contract conservative: high is the
+                // one live-tested reasoning level; off remains available for providers
+                // that honor non-thinking mode.
+                if (id === GLM_FULL) {
+                    return {
+                        levels: [{ id: "off" }, { id: "high" }],
+                        defaultLevel: "high",
+                    };
+                }
+                return undefined;
+            },
+            wrapStreamFn: wrapZeroGProviderStream,
+            wrapSimpleCompletionStreamFn: wrapZeroGProviderStream,
+            classifyFailoverReason: ({ errorMessage }) => {
+                // These are response-shape failures, not transient network failures.
+                // Marking them as format prevents the host from treating a broken tool
+                // payload as an identical same-model timeout retry.
+                if (/incomplete or malformed tool call|invalid tool call/i.test(errorMessage))
+                    return "format";
+                // Circuit-open is deliberate fail-fast protection; do not immediately
+                // re-enter the same unhealthy route via the transient retry loop.
+                if (/0G route temporarily quarantined after repeated stalled streams/i.test(errorMessage))
+                    return "format";
+                return undefined;
+            },
+        });
+    },
+});

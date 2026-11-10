@@ -1,0 +1,192 @@
+{
+  "id": "agvi-0g-compute",
+  "name": "AGVI 0G Compute",
+  "description": "0G-aware OpenClaw provider with per-model transport, routing, trust, TEE and capability discovery.",
+  "version": "0.1.0",
+  "providers": [
+    "agvi-0g-compute"
+  ],
+  "setup": {
+    "providers": [
+      {
+        "id": "agvi-0g-compute",
+        "envVars": [
+          "AGVI_0G_COMPUTE_API_KEY",
+          "ZEROG_COMPUTE_API_KEY"
+        ]
+      }
+    ]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "defaults": {
+        "$ref": "#/definitions/policy"
+      },
+      "models": {
+        "type": "object",
+        "additionalProperties": {
+          "$ref": "#/definitions/modelPolicy"
+        }
+      }
+    },
+    "definitions": {
+      "routing": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "address": {
+            "type": "string",
+            "minLength": 1
+          },
+          "identity": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sort": {
+            "type": "string",
+            "enum": [
+              "latency"
+            ]
+          },
+          "allowFallbacks": {
+            "type": "boolean"
+          }
+        }
+      },
+      "trust": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "key-default",
+              "verified",
+              "private"
+            ]
+          },
+          "allowDowngrade": {
+            "type": "boolean"
+          }
+        }
+      },
+      "teeVerification": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "required": {
+            "type": "boolean"
+          }
+        }
+      },
+      "capabilityDiscovery": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "ttlSeconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3600
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "minimum": 250,
+            "maximum": 30000
+          }
+        }
+      },
+      "observability": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          }
+        }
+      },
+      "policy": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "transport": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "chat-completions",
+              "messages",
+              "responses"
+            ]
+          },
+          "routing": {
+            "$ref": "#/definitions/routing"
+          },
+          "trust": {
+            "$ref": "#/definitions/trust"
+          },
+          "teeVerification": {
+            "$ref": "#/definitions/teeVerification"
+          },
+          "capabilityDiscovery": {
+            "$ref": "#/definitions/capabilityDiscovery"
+          },
+          "observability": {
+            "$ref": "#/definitions/observability"
+          }
+        }
+      },
+      "modelPolicy": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "inheritDefaults": {
+            "type": "boolean"
+          },
+          "transport": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "chat-completions",
+              "messages",
+              "responses"
+            ]
+          },
+          "routing": {
+            "$ref": "#/definitions/routing"
+          },
+          "trust": {
+            "$ref": "#/definitions/trust"
+          },
+          "teeVerification": {
+            "$ref": "#/definitions/teeVerification"
+          },
+          "capabilityDiscovery": {
+            "$ref": "#/definitions/capabilityDiscovery"
+          },
+          "observability": {
+            "$ref": "#/definitions/observability"
+          }
+        }
+      }
+    }
+  },
+  "activation": {
+    "onStartup": true,
+    "providers": [
+      "agvi-0g-compute"
+    ],
+    "capabilities": [
+      "provider"
+    ]
+  }
+}

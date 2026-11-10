@@ -1,0 +1,76 @@
+{
+  "name": "openclaw-plugin-agvi-0g-compute",
+  "version": "0.1.0",
+  "description": "OpenClaw provider plugin for AGVI 0G Compute.",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run --config ./vitest.config.ts",
+    "usage-report": "node dist/tools/usage-report.js",
+    "catalog-compare": "node dist/tools/catalog-compare.js",
+    "health-check": "node dist/tools/health-check.js",
+    "sync-config-stubs": "node dist/tools/sync-config-stubs.js",
+    "validate": "npm run build && clawhub package validate . --out .clawhub-validation",
+    "audit:runtime": "npm audit --omit=dev",
+    "audit:all": "npm audit"
+  },
+  "files": [
+    "dist",
+    "openclaw.plugin.json",
+    "README.md",
+    "src/index.ts"
+  ],
+  "peerDependencies": {
+    "openclaw": ">=2026.10.10"
+  },
+  "peerDependenciesMeta": {
+    "openclaw": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "clawhub": "0.25.1",
+    "openclaw": "2026.11.2",
+    "typescript": "7.0.2",
+    "vitest": "5.1.0"
+  },
+  "openclaw": {
+    "extensions": [
+      "./src/index.ts"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.10.10"
+    },
+    "build": {
+      "openclawVersion": "2026.10.10"
+    },
+    "install": {
+      "clawhubSpec": "clawhub:openclaw-plugin-agvi-0g-compute",
+      "defaultChoice": "clawhub",
+      "minHostVersion": ">=2026.10.10"
+    },
+    "release": {
+      "publishToClawHub": true
+    }
+  },
+  "pluginInspector": {
+    "version": 1,
+    "plugin": {
+      "id": "agvi-0g-compute",
+      "priority": "high",
+      "seams": [
+        "plugin-runtime"
+      ],
+      "sourceRoot": ".",
+      "expect": {
+        "registrations": [
+          "registerProvider"
+        ]
+      }
+    }
+  },
+  "license": "Apache-2.0",
+  "overrides": {
+    "zod": "4.6.6"
+  }
+}

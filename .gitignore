@@ -1,0 +1,8 @@
+node_modules/
+.clawhub-validation/
+coverage/
+.env
+.env.*
+*.log
+*.tmp
+.DS_Store
