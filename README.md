@@ -1,131 +1,248 @@
-# AGVI 0G Compute (OpenClaw provider)
+# AGVI 0G Compute
 
-An OpenClaw-native adapter for the official 0G Compute Router (`https://router-api.0g.ai/v1`). It is independent from any local proxy and owns 0G-specific model metadata, transport selection, provider routing, trust policy, TEE request shaping, discovery, observability, and route resilience.
+An OpenClaw provider plugin for the official [0G Compute Router](https://router-api.0g.ai/v1). It connects directly to 0G, without a local proxy, and provides model-aware transports, capability discovery, provider routing, trust/TEE policy, observability, and route resilience.
 
-## Models and automatic transport
+- **Provider:** `agvi-0g-compute`
+- **Minimum OpenClaw version:** `2026.10.10`
+- **Router endpoint:** `https://router-api.0g.ai/v1`
+- **Current release:** [`v0.1.0`](https://github.com/hubofvalley/agvi-0g-compute/releases/tag/v0.1.0)
 
-| Model | OpenClaw reference | `transport: auto` |
+## Installation
+
+You need:
+
+1. An OpenClaw installation running version `2026.10.10` or newer.
+2. A **0G Compute Router API key**. Do not use a wallet address or private key.
+
+### Install from ClawHub
+
+This is the recommended installation once the package release is visible in ClawHub:
+
+```bash
+openclaw plugins install clawhub:openclaw-plugin-agvi-0g-compute
+```
+
+If ClawHub still reports that the package is not visible while its security review is pending, install the tagged GitHub release instead.
+
+### Install the GitHub release
+
+```bash
+openclaw plugins install git:github.com/hubofvalley/agvi-0g-compute@v0.1.0
+```
+
+The GitHub installation requires access to the repository while it is private.
+
+### Install from a local checkout
+
+Useful for development or when testing a specific commit:
+
+```bash
+git clone https://github.com/hubofvalley/agvi-0g-compute.git
+cd agvi-0g-compute
+npm ci
+npm run validate
+openclaw plugins install "$PWD" --force
+```
+
+Local and GitHub installs run on the machine that hosts the OpenClaw Gateway. After installation, verify the plugin is loaded:
+
+```bash
+openclaw plugins list
+openclaw models list --provider agvi-0g-compute
+```
+
+## Configure authentication
+
+Use a Router API key from your 0G Compute account. The plugin accepts these environment variables, in this order:
+
+1. `AGVI_0G_COMPUTE_API_KEY` — canonical name.
+2. `ZEROG_COMPUTE_API_KEY` — legacy compatibility name.
+
+For a Gateway launched from the shell:
+
+```bash
+export AGVI_0G_COMPUTE_API_KEY="<your-0g-router-api-key>"
+```
+
+For a persistent Gateway installation, add the variable to the Gateway service environment or use OpenClaw's interactive API-key flow:
+
+```bash
+openclaw models auth login --provider agvi-0g-compute --method api-key
+```
+
+Keep the key out of source files, Git, chat messages, and shell history. The provider never needs a wallet/private key.
+
+## Quick start
+
+Choose one of the models registered by the plugin as the OpenClaw default:
+
+```bash
+openclaw models set agvi-0g-compute/glm-5.3
+```
+
+Other available model references:
+
+- `agvi-0g-compute/claude-haiku-5.5`
+- `agvi-0g-compute/deepseek-v4.1-flash`
+- `agvi-0g-compute/qwen3.7-flash`
+- `agvi-0g-compute/glm-5.3-flash`
+- `agvi-0g-compute/glm-5.3`
+
+Then start a new OpenClaw turn. If the Gateway was already running before the key or plugin was installed, restart it using the normal OpenClaw service workflow.
+
+## Models and transports
+
+| Model | OpenClaw reference | Default transport |
 |---|---|---|
-| Claude Haiku 5.5 | `agvi-0g-compute/claude-haiku-5.5` | Messages |
+| Claude Haiku 5.5 | `agvi-0g-compute/claude-haiku-5.5` | Anthropic Messages |
 | DeepSeek V4.1 Flash | `agvi-0g-compute/deepseek-v4.1-flash` | Chat Completions |
 | Qwen 3.7 Flash | `agvi-0g-compute/qwen3.7-flash` | Chat Completions |
 | GLM 5.3 Flash | `agvi-0g-compute/glm-5.3-flash` | Chat Completions |
 | GLM 5.3 | `agvi-0g-compute/glm-5.3` | Chat Completions |
 
-`auto` is only a preference. A model can explicitly select `chat-completions`, `messages`, or `responses` when 0G advertises that format. Capability discovery validates explicit choices against `/v1/models` when available. GLM 5.3 and GLM 5.3 Flash currently advertise all three formats; DeepSeek and Qwen advertise Chat Completions + Responses; Haiku advertises Chat Completions + Messages.
+The `auto` transport is a model-specific preference validated against 0G capability data. You can explicitly select `chat-completions`, `messages`, or `responses` when the router advertises that format.
 
-The plugin catalog is the runtime source of truth for model metadata. OpenClaw requires custom providers to declare a full `models` array in config before plugin normalization runs, so AGVI keeps a compatibility projection there. `normalizeConfig` replaces that projection with this plugin's canonical `MODEL_CATALOG` before inference, preventing stale inline limits/prices from winning.
+## Plugin configuration
 
-## Plugin config
-
-Settings live under `plugins.entries.agvi-0g-compute.config`. Global defaults can be inherited and selectively overridden per model. `inheritDefaults: false` makes that model start from the plugin's built-in safe defaults instead of the configured global defaults.
+Configuration belongs under `plugins.entries.agvi-0g-compute.config`. The defaults are conservative: automatic transport, routing disabled, key-default trust, optional TEE verification, capability discovery enabled, and safe observability.
 
 ```json
 {
-  "defaults": {
-    "transport": "auto",
-    "routing": {
-      "enabled": false,
-      "allowFallbacks": true
-    },
-    "trust": {
-      "mode": "key-default",
-      "allowDowngrade": false
-    },
-    "teeVerification": {
-      "enabled": false,
-      "required": false
-    },
-    "capabilityDiscovery": {
-      "enabled": true,
-      "ttlSeconds": 300,
-      "timeoutMs": 5000
-    },
-    "observability": {
-      "enabled": true
-    }
-  },
-  "models": {
-    "claude-haiku-5.5": { "transport": "messages" },
-    "glm-5.3-flash": { "transport": "chat-completions" },
-    "glm-5.3": {
-      "inheritDefaults": true,
-      "trust": { "mode": "private", "allowDowngrade": false },
-      "teeVerification": { "enabled": true, "required": true }
+  "plugins": {
+    "entries": {
+      "agvi-0g-compute": {
+        "enabled": true,
+        "config": {
+          "defaults": {
+            "transport": "auto",
+            "routing": {
+              "enabled": false,
+              "allowFallbacks": true
+            },
+            "trust": {
+              "mode": "key-default",
+              "allowDowngrade": false
+            },
+            "teeVerification": {
+              "enabled": false,
+              "required": false
+            },
+            "capabilityDiscovery": {
+              "enabled": true,
+              "ttlSeconds": 300,
+              "timeoutMs": 5000
+            },
+            "observability": {
+              "enabled": true
+            }
+          },
+          "models": {
+            "claude-haiku-5.5": {
+              "transport": "messages"
+            },
+            "glm-5.3": {
+              "trust": {
+                "mode": "private",
+                "allowDowngrade": false
+              },
+              "teeVerification": {
+                "enabled": true,
+                "required": true
+              }
+            }
+          }
+        }
+      }
     }
   }
 }
 ```
 
+Model-specific settings override `defaults`. Set `inheritDefaults: false` on a model when it should start from the plugin's built-in safe defaults instead.
+
 ### Transport
 
 - `auto`: model-specific preference with capability validation.
-- `chat-completions`: OpenAI Chat Completions (`openai-completions`).
-- `messages`: Anthropic Messages (`anthropic-messages`).
-- `responses`: OpenAI Responses (`openai-responses`).
+- `chat-completions`: OpenAI Chat Completions compatibility.
+- `messages`: Anthropic Messages compatibility; used by Claude Haiku 5.5 by default.
+- `responses`: OpenAI Responses compatibility.
 
 ### Provider routing
 
-Routing is off by default so upgrading the plugin does not silently change 0G's existing price/health selection. When enabled, the plugin can emit the native 0G headers:
+Routing is disabled by default. When enabled, the plugin can emit native 0G routing headers:
 
 - `X-0G-Provider-Address`
 - `X-0G-Provider-Identity`
 - `X-0G-Provider-Sort: latency`
 - `X-0G-Provider-Allow-Fallbacks`
 
-`identity` requires `address`. If a pinned provider is unhealthy and fallbacks are disabled, the plugin fails before inference when discovery can prove that condition.
+A routing `identity` requires an `address`. A pinned unhealthy provider fails safely when fallbacks are disabled and discovery can confirm the condition.
 
-### Trust mode
+### Trust and TEE verification
 
-- `key-default`: send no trust override header; the API key's dashboard default applies.
-- `verified`: send `X-0G-Provider-Trust-Mode: verified`.
-- `private`: send `X-0G-Provider-Trust-Mode: private`.
+Trust modes are:
 
-Private mode is fail-closed by default. With discovery enabled, a model with no healthy private provider is rejected unless `allowDowngrade: true`. A successful private response must report `X-0G-E2EE: sealed`; otherwise the request is rejected.
+- `key-default`: omit a trust override and use the API key's dashboard default.
+- `verified`: request `X-0G-Provider-Trust-Mode: verified`.
+- `private`: request `X-0G-Provider-Trust-Mode: private`.
 
-### TEE verification
+Private mode is fail-closed by default. A private request is not silently downgraded unless `allowDowngrade: true` is explicitly permitted and the route is not pinned or TEE-required. A private response must report `X-0G-E2EE: sealed`.
 
-`teeVerification.enabled` injects `verify_tee: true` only for a model that discovery/static metadata identifies as TEE-capable. `required: true` also requires `trust.mode: private` and fails closed if TEE capability cannot be established.
+`teeVerification.enabled` asks the router to verify TEE only when the selected model is identified as TEE-capable. `required: true` additionally requires a private route and fails closed when TEE capability cannot be established. The plugin does not fabricate a `tee_verified=true` result from a generic OpenClaw text stream.
 
-0G returns the detailed `tee_verified` result inside its response trace. OpenClaw's generic text transports do not expose that raw trace to provider wrappers, so this plugin does **not** claim independent trace parsing. `required` therefore enforces: TEE-capable model + private route + router-side `verify_tee` request + sealed E2EE response. It does not fabricate a `tee_verified=true` observation.
+GLM 5.3 currently has a private TEE provider. GLM 5.3 Flash currently does not, so a private/required-TEE request for Flash fails safely unless an explicit downgrade policy allows it.
 
-GLM 5.3 currently has a Private TEE provider; GLM 5.3 Flash currently does not. Asking Flash for private/required TEE therefore fails safely rather than silently downgrading, unless downgrade is explicitly enabled.
+## Capability discovery
 
-## Dynamic capability discovery
+When enabled, the plugin discovers and caches:
 
-With discovery enabled, the plugin caches:
+- public `/v1/models` metadata: formats, limits, provider count, and TEE information;
+- authenticated `/v1/providers?model=...` metadata: provider health, address, identity, trust mode, and TEE attributes.
 
-- public `/v1/models`: formats, parameters, context/output limits, provider count, TEE metadata;
-- authenticated `/v1/providers?model=...`: provider health, address/identity, trust mode and TEE attributes.
+The default cache TTL is 300 seconds and discovery timeout is 5 seconds. Ordinary key-default inference uses stale-while-revalidate behavior so discovery does not block normal time-to-first-token. Security-sensitive paths—private trust, required TEE, and pinned routing—wait for fresh data and fail closed when it is unavailable.
 
-The default cache TTL is 300 seconds and the discovery request timeout is 5 seconds. Ordinary standard/key-default inference uses stale-while-revalidate semantics: a fresh cache hit is returned immediately; an expired entry is served stale while one deduplicated refresh runs in the background; and a cold miss starts background discovery while inference immediately falls back to plugin-owned static capabilities. This keeps discovery network I/O off the normal TTFT path.
+## Observability and resilience
 
-Security-sensitive paths deliberately do **not** use stale-while-revalidate. Private trust, required TEE verification, and provider address/identity pinning wait for fresh model/provider capability data and fail closed unless an explicit private-mode downgrade policy permits otherwise. Authenticated provider caches are isolated by API-key fingerprint so one credential cannot reuse another credential's provider-capability cache.
+With observability enabled, logs report model, effective transport/trust, HTTP status, a shortened provider address, E2EE state, TEE request state, fallback detection, correlation information when available, and response-header latency. Prompts, completions, and API keys are not logged.
 
-## Observability
+The provider also includes:
 
-Provider logs contain no prompts, completions, or API keys. When enabled they report model, effective transport, effective trust mode, HTTP status, a shortened selected provider address, E2EE state, whether TEE verification was requested, pin-fallback detection, request correlation when available, and response-header latency.
+- a 180-second provider request budget when no operator timeout is configured;
+- a 15-second cap on provider/SDK `Retry-After` waits;
+- a per-model circuit breaker after two timeout-like stalled streams, with a 120-second cooldown;
+- progress-aware recovery, so HTTP headers alone do not mark a route healthy;
+- non-transient classification for malformed tool calls and open-circuit failures.
 
-## Resilience
+The OpenClaw host's own first-event/idle watchdog can still abort a turn earlier than the provider budget.
 
-- Provider transport request budget: 180 seconds when the operator has not set a provider timeout. This is **not** a replacement for OpenClaw's own first-event/idle watchdog; the host can abort sooner (currently 120 seconds for ordinary cloud turns).
-- Provider/SDK `Retry-After` waits are capped at 15 seconds.
-- Two timeout-like stalls open an in-memory per-model circuit breaker for 120 seconds.
-- A route is marked recovered only after a real model progress event (`text/thinking/tool-call` progress or terminal success), not merely because HTTP 200 headers arrived.
-- Abort listeners are removed when the observed stream settles, preventing completed requests from later being misclassified as stalls.
-- Malformed tool-call payloads and circuit-open failures are classified as non-transient format failures so OpenClaw does not immediately repeat the same bad route.
+## Verification and maintenance
 
-## Authentication
+From a source checkout:
 
-Use a 0G **Router API key**, never a wallet/private key. Accepted environment names are `AGVI_0G_COMPUTE_API_KEY` (canonical) and `ZEROG_COMPUTE_API_KEY` (legacy). SecretRef-backed provider configuration remains supported.
+```bash
+npm ci
+npm test
+npx tsc -p tsconfig.json --noEmit
+npm run validate
+npm run audit:runtime
+```
 
-## Verification and tools
+Available local tools:
 
-- `npm test`: offline unit/contract/regression tests.
-- `npm run validate`: TypeScript build + Plugin Inspector.
-- `npm run health-check -- --json`: public catalog health.
-- `npm run health-check -- --probe --json`: tiny authenticated Chat Completions probes; the key and response text are never printed.
-- `npm run catalog-compare -- --fetch --json`: compare plugin metadata to the public 0G listing.
-- `npm run usage-report -- --file <usage.jsonl> --json`: local read-only cost estimate.
+- `npm run health-check -- --json`: check the public 0G catalog.
+- `npm run health-check -- --probe --json`: run small authenticated probes without printing the key or response text.
+- `npm run catalog-compare -- --fetch --json`: compare plugin metadata with the public 0G listing.
+- `npm run usage-report -- --file <usage.jsonl> --json`: calculate a local, read-only usage estimate.
 
-The dated public catalog fixture lives under `src/fixtures/` and is evidence for offline tests, not a replacement for live capability discovery.
+The plugin owns its canonical model catalog and compiled runtime under `dist/`. Do not replace the published `dist/` entrypoint with `src/index.ts`.
+
+## Security
+
+- Use a 0G Router API key, never a wallet/private key.
+- Keep credentials in the Gateway environment or OpenClaw's credential store.
+- Review provider routing and private/TEE policies before enabling them in production.
+- See [SECURITY.md](SECURITY.md) for reporting security issues.
+
+## License
+
+Apache-2.0
