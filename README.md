@@ -14,27 +14,35 @@ You need:
 1. An OpenClaw installation running version `2026.10.10` or newer.
 2. A **0G Compute Router API key**. Do not use a wallet address or private key.
 
-### Install from ClawHub
+### 1. Create a 0G Compute Router API key
 
-This is the recommended installation once the package release is visible in ClawHub:
+1. Open [pc.0g.ai](https://pc.0g.ai/).
+2. Sign in or create an account, then create a **Compute Router API key**.
+3. Copy the key and keep it private.
+
+> **Important:** use a 0G **Router API key**. Never paste a wallet private key, seed phrase, or wallet address into OpenClaw.
+
+### 2. Install the plugin
+
+#### ClawHub (recommended)
+
+Use the ClawHub package when its release is visible in the registry:
 
 ```bash
 openclaw plugins install clawhub:openclaw-plugin-agvi-0g-compute
 ```
 
-If ClawHub still reports that the package is not visible while its security review is pending, install the tagged GitHub release instead.
+If ClawHub reports that the package is not visible while its security review is pending, use the public GitHub release below.
 
-### Install the GitHub release
+#### GitHub release (public fallback)
 
 ```bash
 openclaw plugins install git:github.com/hubofvalley/agvi-0g-compute@v0.1.0
 ```
 
-The GitHub installation requires access to the repository while it is private.
+The repository is public, so this installation does not require GitHub credentials.
 
-### Install from a local checkout
-
-Useful for development or when testing a specific commit:
+#### Local checkout (development)
 
 ```bash
 git clone https://github.com/hubofvalley/agvi-0g-compute.git
@@ -44,51 +52,65 @@ npm run validate
 openclaw plugins install "$PWD" --force
 ```
 
-Local and GitHub installs run on the machine that hosts the OpenClaw Gateway. After installation, verify the plugin is loaded:
+All installs run on the machine that hosts the OpenClaw Gateway. Verify that OpenClaw can see the provider:
 
 ```bash
 openclaw plugins list
 openclaw models list --provider agvi-0g-compute
 ```
 
-## Configure authentication
+If the plugin is installed but shown as disabled, enable it:
 
-Use a Router API key from your 0G Compute account. The plugin accepts these environment variables, in this order:
+```bash
+openclaw plugins enable agvi-0g-compute
+```
 
-1. `AGVI_0G_COMPUTE_API_KEY` — canonical name.
-2. `ZEROG_COMPUTE_API_KEY` — legacy compatibility name.
+### 3. Give the API key to the Gateway
 
-For a Gateway launched from the shell:
+The API key is credential data, not plugin policy configuration. Use one of these supported methods.
+
+#### Option A: environment variable
+
+For a Gateway launched from the current shell:
 
 ```bash
 export AGVI_0G_COMPUTE_API_KEY="<your-0g-router-api-key>"
 ```
 
-For a persistent Gateway installation, add the variable to the Gateway service environment or use OpenClaw's interactive API-key flow:
+For a persistent Gateway service, add the same variable to the service environment so the Gateway—not only your interactive shell—can read it, then restart the Gateway. The canonical variable is `AGVI_0G_COMPUTE_API_KEY`; the legacy `ZEROG_COMPUTE_API_KEY` name is also accepted.
+
+#### Option B: OpenClaw credential store
+
+Let OpenClaw prompt for the key and store it as a provider credential:
 
 ```bash
 openclaw models auth login --provider agvi-0g-compute --method api-key
 ```
 
-Keep the key out of source files, Git, chat messages, and shell history. The provider never needs a wallet/private key.
+Keep the key out of source files, Git, README examples, chat messages, and shell history. Do not put it in `plugins.entries.agvi-0g-compute.config`; that section is for routing, transport, trust, TEE, discovery, and observability policies.
 
-## Quick start
+### 4. Select a model
 
-Choose one of the models registered by the plugin as the OpenClaw default:
+List the five models registered by the plugin:
+
+```bash
+openclaw models list --provider agvi-0g-compute
+```
+
+Set the OpenClaw default model:
 
 ```bash
 openclaw models set agvi-0g-compute/glm-5.3
 ```
 
-Other available model references:
+Available model references are listed below. After installing the plugin or changing the Gateway environment, start a new turn; restart the Gateway first if it was already running.
 
-- `agvi-0g-compute/claude-haiku-5.5`
-- `agvi-0g-compute/deepseek-v4.1-flash`
-- `agvi-0g-compute/qwen3.7-flash`
-- `agvi-0g-compute/glm-5.3-flash`
-- `agvi-0g-compute/glm-5.3`
+### Setup checklist
 
-Then start a new OpenClaw turn. If the Gateway was already running before the key or plugin was installed, restart it using the normal OpenClaw service workflow.
+- [ ] Router API key created at [pc.0g.ai](https://pc.0g.ai/).
+- [ ] Plugin installed and visible in `openclaw plugins list`.
+- [ ] `openclaw models list --provider agvi-0g-compute` shows the AGVI models.
+- [ ] Gateway received the API key and the selected model is `agvi-0g-compute/<model>`.
 
 ## Models and transports
 
