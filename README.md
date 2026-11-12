@@ -91,11 +91,13 @@ Keep the key out of source files, Git, README examples, chat messages, and shell
 
 ### 4. Select a model
 
-List the five models registered by the plugin:
+The plugin refreshes its catalog from the 0G Router `/v1/models` inventory. It exposes every router row that is a text-output `chatbot` and keeps the five existing routes as curated compatibility overrides.
 
 ```bash
 openclaw models list --provider agvi-0g-compute
 ```
+
+The catalog is cached (default TTL: 300 seconds), falls back to the curated entries when the router is unavailable, and also resolves a newly advertised text model on demand. The exact model count can change as 0G publishes or retires models.
 
 Set the OpenClaw default model:
 
@@ -103,16 +105,18 @@ Set the OpenClaw default model:
 openclaw models set agvi-0g-compute/glm-5.3
 ```
 
-Available model references are listed below. After installing the plugin or changing the Gateway environment, start a new turn; restart the Gateway first if it was already running.
+After installing the plugin or changing the Gateway environment, start a new turn; restart the Gateway first if it was already running.
 
 ### Setup checklist
 
 - [ ] Router API key created at [pc.0g.ai](https://pc.0g.ai/).
 - [ ] Plugin installed and visible in `openclaw plugins list`.
-- [ ] `openclaw models list --provider agvi-0g-compute` shows the AGVI models.
+- [ ] `openclaw models list --provider agvi-0g-compute` shows the live text/chat inventory.
 - [ ] Gateway received the API key and the selected model is `agvi-0g-compute/<model>`.
 
-## Models and transports
+## Curated model transports
+
+The rows below document the five compatibility overrides; live chat models use the same transport selection rules from their advertised router formats.
 
 | Model | OpenClaw reference | Default transport |
 |---|---|---|
@@ -123,6 +127,8 @@ Available model references are listed below. After installing the plugin or chan
 | GLM 5.3 | `agvi-0g-compute/glm-5.3` | Chat Completions |
 
 The `auto` transport is a model-specific preference validated against 0G capability data. You can explicitly select `chat-completions`, `messages`, or `responses` when the router advertises that format.
+
+The 0G inventory also contains image-generation, video-generation, text-to-speech, speech-to-text, embedding, and decision models. They are intentionally not inserted into this text-provider catalog: OpenClaw's `ProviderPlugin` model contract routes ordinary agent turns through text transports, so presenting those rows as chat models would be misleading and could send incompatible payloads. The live capability fields are preserved by discovery for future native capability adapters.
 
 ## Plugin configuration
 

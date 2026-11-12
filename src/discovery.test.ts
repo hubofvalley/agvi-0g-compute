@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { discoverModel, discoverModelSWR, discoverProviders, resetDiscoveryCachesForTests } from "./discovery.js";
+import { discoverModel, discoverModelSWR, discoverModels, discoverProviders, resetDiscoveryCachesForTests } from "./discovery.js";
 
 const discovery = { enabled: true, ttlSeconds: 300, timeoutMs: 5_000 };
 
@@ -27,6 +27,22 @@ describe("0G capability discovery", () => {
     const second = await discoverModel("glm-5.3", discovery);
     expect(first).toMatchObject({ tee_attested: true, verifiability: "TeeML" });
     expect(second).toEqual(first);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns the full cached inventory in router order", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      data: [
+        { id: "first-model", type: "chatbot" },
+        { id: "second-model", type: "text-to-image" },
+      ],
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const rows = await discoverModels(discovery);
+    const cached = await discoverModels(discovery);
+    expect(rows.map((row) => row.id)).toEqual(["first-model", "second-model"]);
+    expect(cached).toEqual(rows);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 

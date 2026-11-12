@@ -12,11 +12,12 @@ import {
 import {
   discoverModel,
   discoverModelSWR,
+  discoverModels,
   discoverProviders,
   type RemoteModelCapability,
   type RemoteProviderCapability,
 } from "./discovery.js";
-import { getModelMetadata, MODEL_CATALOG } from "./catalog.js";
+import { buildModelCatalog, buildModelFromRemote, getModelMetadata, MODEL_CATALOG } from "./catalog.js";
 import { MODEL_IDS, normalizeModelId, PROVIDER_ID, ROUTER_BASE_URL } from "./identifiers.js";
 import { resolveTransport, type ResolvedTransport } from "./transport.js";
 
@@ -449,6 +450,26 @@ export function wrapZeroGProviderStream(ctx: ProviderWrapStreamFnContext) {
  */
 export const ENV_VARS = ["AGVI_0G_COMPUTE_API_KEY", "ZEROG_COMPUTE_API_KEY"] as const;
 
+function catalogDiscoveryConfig(): ModelPolicy["capabilityDiscovery"] {
+  return resolveModelPolicy(runtimePluginConfig, HAIKU).capabilityDiscovery;
+}
+
+async function loadLiveCatalog(signal?: AbortSignal) {
+  const rows = await discoverModels(catalogDiscoveryConfig(), signal);
+  return buildModelCatalog(rows);
+}
+
+function resolveCachedDynamicModel(modelId: string) {
+  const row = discoverModelSWR(modelId, catalogDiscoveryConfig(), (error) => {
+    runtimeLogger?.debug?.(`agvi-0g-compute live catalog refresh failed: ${error instanceof Error ? error.message : String(error)}`);
+  });
+  return row ? buildModelFromRemote(row) : undefined;
+}
+
+function toRuntimeModel(model: ReturnType<typeof buildModelFromRemote>) {
+  return model ? { ...model, provider: PROVIDER, baseUrl: ROUTER_BASE_URL } : undefined;
+}
+
 export default definePluginEntry({
   id: PROVIDER,
   name: "AGVI 0G Compute",
@@ -482,16 +503,32 @@ export default definePluginEntry({
         run: async (ctx) => {
           const apiKey = ctx.resolveProviderApiKey(PROVIDER).apiKey;
           if (!apiKey) return null;
+          let models = MODEL_CATALOG;
+          try {
+            models = await loadLiveCatalog(ctx.signal);
+          } catch (error) {
+            runtimeLogger?.warn?.(`agvi-0g-compute live catalog unavailable; using curated fallback: ${error instanceof Error ? error.message : String(error)}`);
+          }
           return {
             provider: {
               baseUrl: ROUTER_BASE_URL,
               apiKey,
               api: "openai-completions",
               timeoutSeconds: DEFAULT_REQUEST_TIMEOUT_SECONDS,
-              models: MODEL_CATALOG,
+              models,
             },
           };
         },
+      },
+      resolveDynamicModel: ({ modelId }) => toRuntimeModel(resolveCachedDynamicModel(modelId)),
+      prepareDynamicModel: async ({ modelId }) => {
+        try {
+          const row = await discoverModel(modelId, catalogDiscoveryConfig());
+          return toRuntimeModel(row ? buildModelFromRemote(row) : undefined);
+        } catch (error) {
+          runtimeLogger?.debug?.(`agvi-0g-compute dynamic model lookup failed model=${routeKey(modelId)} error=${error instanceof Error ? error.message : String(error)}`);
+          return undefined;
+        }
       },
       normalizeConfig: ({ providerConfig }) => {
         // OpenClaw requires custom providers to declare a `models` array in the

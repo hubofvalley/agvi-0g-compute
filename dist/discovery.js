@@ -40,11 +40,11 @@ async function fetchJson(url, init, timeoutMs) {
         throw new Error(`0G discovery HTTP ${response.status}`);
     return response.json();
 }
-async function refreshModels(config) {
+async function refreshModels(config, signal) {
     if (modelRefreshInFlight)
         return modelRefreshInFlight;
     const refresh = (async () => {
-        const raw = await fetchJson(`${ROUTER_BASE_URL}/models`, {}, config.timeoutMs);
+        const raw = await fetchJson(`${ROUTER_BASE_URL}/models`, { signal }, config.timeoutMs);
         const map = new Map();
         for (const row of raw.data ?? [])
             if (row?.id)
@@ -72,6 +72,15 @@ export function discoverModelSWR(modelId, config, onRefreshError) {
         return cached;
     void refreshModels(config).catch((error) => onRefreshError?.(error));
     return cached;
+}
+/** Return the cached/live 0G model inventory in router order. */
+export async function discoverModels(config, signal) {
+    if (!config.enabled)
+        return [];
+    const now = Date.now();
+    if (!modelCache || modelCache.expiresAt <= now)
+        await refreshModels(config, signal);
+    return [...(modelCache?.value.values() ?? [])];
 }
 export async function discoverModel(modelId, config) {
     if (!config.enabled)

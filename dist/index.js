@@ -1,8 +1,8 @@
 import { definePluginEntry, } from "openclaw/plugin-sdk/plugin-entry";
 import { createProviderApiKeyAuthMethod } from "openclaw/plugin-sdk/provider-auth";
 import { parsePluginConfig, resolveModelPolicy, } from "./config.js";
-import { discoverModel, discoverModelSWR, discoverProviders, } from "./discovery.js";
-import { getModelMetadata, MODEL_CATALOG } from "./catalog.js";
+import { discoverModel, discoverModelSWR, discoverModels, discoverProviders, } from "./discovery.js";
+import { buildModelCatalog, buildModelFromRemote, getModelMetadata, MODEL_CATALOG } from "./catalog.js";
 import { MODEL_IDS, normalizeModelId, PROVIDER_ID, ROUTER_BASE_URL } from "./identifiers.js";
 import { resolveTransport } from "./transport.js";
 export { MODEL_CATALOG };
@@ -381,6 +381,22 @@ export function wrapZeroGProviderStream(ctx) {
  * Keep openclaw.plugin.json setup.providers[0].envVars in the same order (contract test enforces it).
  */
 export const ENV_VARS = ["AGVI_0G_COMPUTE_API_KEY", "ZEROG_COMPUTE_API_KEY"];
+function catalogDiscoveryConfig() {
+    return resolveModelPolicy(runtimePluginConfig, HAIKU).capabilityDiscovery;
+}
+async function loadLiveCatalog(signal) {
+    const rows = await discoverModels(catalogDiscoveryConfig(), signal);
+    return buildModelCatalog(rows);
+}
+function resolveCachedDynamicModel(modelId) {
+    const row = discoverModelSWR(modelId, catalogDiscoveryConfig(), (error) => {
+        runtimeLogger?.debug?.(`agvi-0g-compute live catalog refresh failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
+    return row ? buildModelFromRemote(row) : undefined;
+}
+function toRuntimeModel(model) {
+    return model ? { ...model, provider: PROVIDER, baseUrl: ROUTER_BASE_URL } : undefined;
+}
 export default definePluginEntry({
     id: PROVIDER,
     name: "AGVI 0G Compute",
@@ -415,16 +431,34 @@ export default definePluginEntry({
                     const apiKey = ctx.resolveProviderApiKey(PROVIDER).apiKey;
                     if (!apiKey)
                         return null;
+                    let models = MODEL_CATALOG;
+                    try {
+                        models = await loadLiveCatalog(ctx.signal);
+                    }
+                    catch (error) {
+                        runtimeLogger?.warn?.(`agvi-0g-compute live catalog unavailable; using curated fallback: ${error instanceof Error ? error.message : String(error)}`);
+                    }
                     return {
                         provider: {
                             baseUrl: ROUTER_BASE_URL,
                             apiKey,
                             api: "openai-completions",
                             timeoutSeconds: DEFAULT_REQUEST_TIMEOUT_SECONDS,
-                            models: MODEL_CATALOG,
+                            models,
                         },
                     };
                 },
+            },
+            resolveDynamicModel: ({ modelId }) => toRuntimeModel(resolveCachedDynamicModel(modelId)),
+            prepareDynamicModel: async ({ modelId }) => {
+                try {
+                    const row = await discoverModel(modelId, catalogDiscoveryConfig());
+                    return toRuntimeModel(row ? buildModelFromRemote(row) : undefined);
+                }
+                catch (error) {
+                    runtimeLogger?.debug?.(`agvi-0g-compute dynamic model lookup failed model=${routeKey(modelId)} error=${error instanceof Error ? error.message : String(error)}`);
+                    return undefined;
+                }
             },
             normalizeConfig: ({ providerConfig }) => {
                 // OpenClaw requires custom providers to declare a `models` array in the
