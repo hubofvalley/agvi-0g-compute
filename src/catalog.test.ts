@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildModelCatalog, buildModelFromRemote, MODEL_CATALOG } from "./catalog.js";
+import { buildModelCatalog, buildModelFromRemote, getModelMetadata, MODEL_CATALOG } from "./catalog.js";
 import type { RemoteModelCapability } from "./discovery.js";
 
 const row = (overrides: Partial<RemoteModelCapability>): RemoteModelCapability => ({
@@ -32,6 +32,11 @@ describe("live 0G model catalog", () => {
       maxTokens: 65_536,
       cost: { input: 1, output: 4, cacheRead: 0, cacheWrite: 0 },
     });
+    expect(getModelMetadata("gemini-3.7-flash")?.unknownRateClasses).toEqual(["cacheRead", "cacheWrite"]);
+    expect(getModelMetadata("gemini-3.7-flash")?.rateNotes).toEqual([
+      "cacheRead rate not published by the 0G Router (unknown, not free)",
+      "cacheWrite rate not published by the 0G Router (unknown, not free)",
+    ]);
   });
 
   it("uses Anthropic Messages for Claude rows that advertise it", () => {
@@ -48,6 +53,11 @@ describe("live 0G model catalog", () => {
     expect(model).toEqual(MODEL_CATALOG.find((entry) => entry.id === "glm-5.3"));
   });
 
+  it("rejects unknown or incomplete model capability rows", () => {
+    expect(buildModelFromRemote(row({ type: "experimental-chat" }))).toBeUndefined();
+    expect(buildModelFromRemote({ id: "missing-capabilities", type: "chatbot" })).toBeUndefined();
+  });
+
   it("does not expose non-text output models through the text provider", () => {
     for (const type of ["text-to-image", "video-generation", "text-to-speech", "embedding", "decisions"]) {
       expect(buildModelFromRemote(row({
@@ -56,6 +66,12 @@ describe("live 0G model catalog", () => {
         architecture: { input_modalities: ["text"], output_modalities: [type === "embedding" ? "embedding" : "image"] },
       }))).toBeUndefined();
     }
+  });
+
+  it("does not retain a curated model omitted by a successful live inventory", () => {
+    const catalog = buildModelCatalog([row({ id: "gpt-5.6-sol" })], { includeMissingCurated: false });
+    expect(catalog.map((model) => model.id)).toEqual(["gpt-5.6-sol"]);
+    expect(catalog.some((model) => model.id === "glm-5.3")).toBe(false);
   });
 
   it("merges live chat rows while retaining all curated fallback rows", () => {

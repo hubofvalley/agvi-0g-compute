@@ -46,6 +46,24 @@ describe("0G capability discovery", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("refreshes when a stricter caller TTL expires cached inventory", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-11-12T00:00:00Z"));
+    try {
+      const fetchMock = vi.fn()
+        .mockResolvedValueOnce(new Response(JSON.stringify({ data: [{ id: "long-lived" }] }), { status: 200 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ data: [{ id: "short-lived" }] }), { status: 200 }));
+      globalThis.fetch = fetchMock as typeof fetch;
+      await discoverModels({ ...discovery, ttlSeconds: 3_600 });
+      vi.advanceTimersByTime(1_100);
+      const refreshed = await discoverModel("short-lived", { ...discovery, ttlSeconds: 1 });
+      expect(refreshed?.id).toBe("short-lived");
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("discovers private provider health and caches per model", async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({
       data: [{
