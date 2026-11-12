@@ -6,10 +6,26 @@ export { ROUTER_BASE_URL };
 
 export type RemoteModelCapability = {
   id: string;
+  name?: string;
+  description?: string;
+  type?: string;
   context_length?: number;
   max_completion_tokens?: number;
+  architecture?: {
+    modality?: string;
+    input_modalities?: string[];
+    output_modalities?: string[];
+    [key: string]: unknown;
+  };
+  pricing?: Record<string, string | number>;
+  pricing_usd?: Record<string, string | number>;
+  default_parameters?: Record<string, unknown>;
   supported_formats?: string[];
   supported_parameters?: string[];
+  image_capabilities?: Record<string, unknown>;
+  video_capabilities?: Record<string, unknown>;
+  speech_capabilities?: Record<string, unknown>;
+  async_supported?: boolean;
   provider_count?: number;
   verifiability?: string | null;
   tee_attested?: boolean | null;
@@ -73,10 +89,10 @@ async function fetchJson(url: string, init: RequestInit, timeoutMs: number): Pro
   return response.json();
 }
 
-async function refreshModels(config: CapabilityDiscoveryConfig): Promise<void> {
+async function refreshModels(config: CapabilityDiscoveryConfig, signal?: AbortSignal): Promise<void> {
   if (modelRefreshInFlight) return modelRefreshInFlight;
   const refresh = (async () => {
-    const raw = await fetchJson(`${ROUTER_BASE_URL}/models`, {}, config.timeoutMs) as { data?: RemoteModelCapability[] };
+    const raw = await fetchJson(`${ROUTER_BASE_URL}/models`, { signal }, config.timeoutMs) as { data?: RemoteModelCapability[] };
     const map = new Map<string, RemoteModelCapability>();
     for (const row of raw.data ?? []) if (row?.id) map.set(row.id, row);
     modelCache = { expiresAt: Date.now() + ttlMs(config), value: map };
@@ -106,6 +122,17 @@ export function discoverModelSWR(
 
   void refreshModels(config).catch((error) => onRefreshError?.(error));
   return cached;
+}
+
+/** Return the cached/live 0G model inventory in router order. */
+export async function discoverModels(
+  config: CapabilityDiscoveryConfig,
+  signal?: AbortSignal,
+): Promise<RemoteModelCapability[]> {
+  if (!config.enabled) return [];
+  const now = Date.now();
+  if (!modelCache || modelCache.expiresAt <= now) await refreshModels(config, signal);
+  return [...(modelCache?.value.values() ?? [])];
 }
 
 export async function discoverModel(
