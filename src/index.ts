@@ -194,6 +194,20 @@ async function resolveRequestPolicy(
     }
   }
 
+  const isCuratedModel = getModelMetadata(model.id) !== undefined;
+  if (policy.transport !== "auto" && !isCuratedModel && !remoteModel?.supported_formats?.length) {
+    if (!policy.capabilityDiscovery.enabled) {
+      throw new Error(`0G explicit transport ${policy.transport} for ${model.id} cannot be validated because capability discovery is disabled`);
+    }
+    try {
+      remoteModel = await discoverModel(model.id, policy.capabilityDiscovery);
+    } catch (error) {
+      throw new Error(`0G explicit transport discovery failed for ${model.id}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (!remoteModel?.supported_formats?.length) {
+      throw new Error(`0G explicit transport ${policy.transport} for ${model.id} cannot be validated because router formats are unavailable`);
+    }
+  }
   const transport = resolveTransport(model.id, policy.transport, remoteModel?.supported_formats, model.api);
   let trustMode = policy.trust.mode;
   let providers: RemoteProviderCapability[] = [];
@@ -456,7 +470,8 @@ function catalogDiscoveryConfig(): ModelPolicy["capabilityDiscovery"] {
 
 async function loadLiveCatalog(signal?: AbortSignal) {
   const rows = await discoverModels(catalogDiscoveryConfig(), signal);
-  return buildModelCatalog(rows);
+  if (rows.length === 0) throw new Error("0G router returned an empty model inventory");
+  return buildModelCatalog(rows, { includeMissingCurated: false });
 }
 
 function resolveCachedDynamicModel(modelId: string) {

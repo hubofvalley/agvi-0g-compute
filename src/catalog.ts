@@ -161,14 +161,7 @@ const STATIC_CATALOG_BY_ID = new Map(
   MODEL_CATALOG.map((model) => [normalizeModelId(model.id), model] as const),
 );
 const DYNAMIC_DEFAULT_MAX_TOKENS = 32_768;
-const NON_TEXT_PROVIDER_TYPES = new Set([
-  "text-to-image",
-  "video-generation",
-  "text-to-speech",
-  "speech-to-text",
-  "embedding",
-  "decisions",
-]);
+const DYNAMIC_MODEL_METADATA = new Map<string, ModelMetadata>();
 
 function positiveNumber(value: unknown): number | undefined {
   const number = typeof value === "number" ? value : Number(value);
@@ -180,11 +173,16 @@ function pricingPerMillion(row: RemoteModelCapability, key: string): number {
   return value === undefined ? 0 : value * 1_000_000;
 }
 
+function hasPublishedPrice(row: RemoteModelCapability, key: string): boolean {
+  const value = row.pricing_usd?.[key];
+  return value !== undefined && value !== null && Number.isFinite(Number(value));
+}
+
 function isTextChatModel(row: RemoteModelCapability): boolean {
-  if (!row.id || (row.type !== undefined && NON_TEXT_PROVIDER_TYPES.has(row.type))) return false;
-  const inputs = row.architecture?.input_modalities ?? ["text"];
-  const outputs = row.architecture?.output_modalities ?? ["text"];
-  const formats = row.supported_formats ?? ["openai"];
+  const inputs = row.architecture?.input_modalities;
+  const outputs = row.architecture?.output_modalities;
+  const formats = row.supported_formats;
+  if (row.type !== "chatbot" || !row.id || !inputs?.length || !outputs?.length || !formats?.length) return false;
   return inputs.includes("text") && outputs.includes("text") &&
     formats.some((format) => ["openai", "responses", "anthropic"].includes(format));
 }
@@ -211,6 +209,25 @@ export function buildModelFromRemote(row: RemoteModelCapability): ModelCatalogEn
   const contextWindow = positiveNumber(row.context_length);
   const maxTokens = positiveNumber(row.max_completion_tokens) ??
     Math.min(contextWindow ?? DYNAMIC_DEFAULT_MAX_TOKENS, DYNAMIC_DEFAULT_MAX_TOKENS);
+  const api = selectDynamicApi(row);
+  const preferredTransport = api === "anthropic-messages" ? "messages" :
+    api === "openai-responses" ? "responses" : "chat-completions";
+  const unknownRateClasses: UnknownRateClass[] = [];
+  const rateNotes: string[] = [];
+  if (!hasPublishedPrice(row, "cache_read")) {
+    unknownRateClasses.push("cacheRead");
+    rateNotes.push("cacheRead rate not published by the 0G Router (unknown, not free)");
+  }
+  if (!hasPublishedPrice(row, "cache_write")) {
+    unknownRateClasses.push("cacheWrite");
+    rateNotes.push("cacheWrite rate not published by the 0G Router (unknown, not free)");
+  }
+  DYNAMIC_MODEL_METADATA.set(normalizeModelId(row.id), {
+    preferredTransports: [preferredTransport],
+    supportedFormats: [...(row.supported_formats ?? [])],
+    ...(unknownRateClasses.length ? { unknownRateClasses } : {}),
+    ...(rateNotes.length ? { rateNotes } : {}),
+  });
   const compat = supportsReasoningEffort
     ? {
         supportsDeveloperRole: false,
@@ -222,7 +239,7 @@ export function buildModelFromRemote(row: RemoteModelCapability): ModelCatalogEn
   return {
     id: row.id,
     name: `${row.name ?? row.id} (0G Compute)`,
-    api: selectDynamicApi(row),
+    api,
     reasoning: supportsReasoningEffort || supportsThinking,
     ...(supportsThinking ? { thinkingLevelMap: { high: "high" } } : {}),
     input,
@@ -243,8 +260,12 @@ export function buildModelFromRemote(row: RemoteModelCapability): ModelCatalogEn
  * modalities are intentionally omitted from the text-provider catalog; their
  * IDs remain available to capability-specific adapters when those are added.
  */
-export function buildModelCatalog(rows: readonly RemoteModelCapability[]): ModelCatalogEntry[] {
-  const models = [...MODEL_CATALOG];
+export function buildModelCatalog(
+  rows: readonly RemoteModelCapability[],
+  options: { includeMissingCurated?: boolean } = {},
+): ModelCatalogEntry[] {
+  const includeMissingCurated = options.includeMissingCurated !== false;
+  const models = includeMissingCurated ? [...MODEL_CATALOG] : [];
   const seen = new Set(models.map((model) => normalizeModelId(model.id)));
   for (const row of rows) {
     const model = buildModelFromRemote(row);
@@ -256,5 +277,6 @@ export function buildModelCatalog(rows: readonly RemoteModelCapability[]): Model
 }
 
 export function getModelMetadata(modelId: string | undefined): ModelMetadata | undefined {
-  return MODEL_METADATA[normalizeModelId(modelId) as ModelId];
+  const normalized = normalizeModelId(modelId);
+  return MODEL_METADATA[normalized as ModelId] ?? DYNAMIC_MODEL_METADATA.get(normalized);
 }

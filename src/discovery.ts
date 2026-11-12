@@ -46,8 +46,9 @@ export type RemoteProviderCapability = {
 };
 
 type Timed<T> = { expiresAt: number; value: T };
+type ModelCache = { fetchedAt: number; value: Map<string, RemoteModelCapability> };
 
-let modelCache: Timed<Map<string, RemoteModelCapability>> | undefined;
+let modelCache: ModelCache | undefined;
 let modelRefreshInFlight: Promise<void> | undefined;
 const providerCache = new Map<string, Timed<RemoteProviderCapability[]>>();
 const providerRefreshInFlight = new Map<string, Promise<RemoteProviderCapability[]>>();
@@ -95,7 +96,7 @@ async function refreshModels(config: CapabilityDiscoveryConfig, signal?: AbortSi
     const raw = await fetchJson(`${ROUTER_BASE_URL}/models`, { signal }, config.timeoutMs) as { data?: RemoteModelCapability[] };
     const map = new Map<string, RemoteModelCapability>();
     for (const row of raw.data ?? []) if (row?.id) map.set(row.id, row);
-    modelCache = { expiresAt: Date.now() + ttlMs(config), value: map };
+    modelCache = { fetchedAt: Date.now(), value: map };
   })();
   modelRefreshInFlight = refresh.finally(() => {
     modelRefreshInFlight = undefined;
@@ -118,7 +119,7 @@ export function discoverModelSWR(
   if (!config.enabled) return undefined;
   const now = Date.now();
   const cached = modelCache?.value.get(modelId);
-  if (modelCache && modelCache.expiresAt > now) return cached;
+  if (modelCache && now - modelCache.fetchedAt < ttlMs(config)) return cached;
 
   void refreshModels(config).catch((error) => onRefreshError?.(error));
   return cached;
@@ -131,7 +132,7 @@ export async function discoverModels(
 ): Promise<RemoteModelCapability[]> {
   if (!config.enabled) return [];
   const now = Date.now();
-  if (!modelCache || modelCache.expiresAt <= now) await refreshModels(config, signal);
+  if (!modelCache || now - modelCache.fetchedAt >= ttlMs(config)) await refreshModels(config, signal);
   return [...(modelCache?.value.values() ?? [])];
 }
 
@@ -141,7 +142,7 @@ export async function discoverModel(
 ): Promise<RemoteModelCapability | undefined> {
   if (!config.enabled) return undefined;
   const now = Date.now();
-  if (!modelCache || modelCache.expiresAt <= now) {
+  if (!modelCache || now - modelCache.fetchedAt >= ttlMs(config)) {
     await refreshModels(config);
   }
   return modelCache?.value.get(modelId);

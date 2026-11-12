@@ -30,11 +30,6 @@ describe("agvi-0g-compute", () => {
       expect(result?.provider?.baseUrl).toBe("https://router-api.0g.ai/v1");
       expect(result?.provider?.timeoutSeconds).toBe(DEFAULT_REQUEST_TIMEOUT_SECONDS);
       expect(result?.provider?.models?.map((m) => [m.id, m.api, m.reasoning])).toEqual([
-        ["claude-haiku-5.5", "anthropic-messages", true],
-        ["deepseek-v4.1-flash", "openai-completions", true],
-        ["qwen3.7-flash", "openai-completions", true],
-        ["glm-5.3-flash", "openai-completions", true],
-        ["glm-5.3", "openai-completions", true],
         ["gpt-5.6-sol", "openai-completions", false],
       ]);
     } finally {

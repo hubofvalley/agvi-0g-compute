@@ -79,6 +79,22 @@ describe("0G routing / trust request shaping", () => {
     expect(effectiveApi).toBe("openai-responses");
   });
 
+  it("fails closed on an explicit transport until a dynamic model is advertised", async () => {
+    setPluginConfigForTests({
+      defaults: { capabilityDiscovery: { enabled: true, ttlSeconds: 300, timeoutMs: 5_000 }, observability: { enabled: false } },
+      models: { "qwen3.8-flash": { transport: "messages" } },
+    });
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      data: [{ id: "qwen3.8-flash", supported_formats: ["openai", "responses"] }],
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+    globalThis.fetch = fetchMock as typeof fetch;
+    const base = vi.fn(() => stream("qwen3.8-flash"));
+    const wrapped = wrapZeroGProviderStream({ streamFn: base } as unknown as ProviderWrapStreamFnContext)!;
+    await expect(wrapped(model("qwen3.8-flash"), {} as never, {})).rejects.toThrow(/not advertised/);
+    expect(base).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("injects verify_tee only when TEE verification is enabled", async () => {
     setPluginConfigForTests({
       defaults: { capabilityDiscovery: { enabled: false }, observability: { enabled: false } },

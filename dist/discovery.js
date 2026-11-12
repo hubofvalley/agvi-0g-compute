@@ -49,7 +49,7 @@ async function refreshModels(config, signal) {
         for (const row of raw.data ?? [])
             if (row?.id)
                 map.set(row.id, row);
-        modelCache = { expiresAt: Date.now() + ttlMs(config), value: map };
+        modelCache = { fetchedAt: Date.now(), value: map };
     })();
     modelRefreshInFlight = refresh.finally(() => {
         modelRefreshInFlight = undefined;
@@ -68,7 +68,7 @@ export function discoverModelSWR(modelId, config, onRefreshError) {
         return undefined;
     const now = Date.now();
     const cached = modelCache?.value.get(modelId);
-    if (modelCache && modelCache.expiresAt > now)
+    if (modelCache && now - modelCache.fetchedAt < ttlMs(config))
         return cached;
     void refreshModels(config).catch((error) => onRefreshError?.(error));
     return cached;
@@ -78,7 +78,7 @@ export async function discoverModels(config, signal) {
     if (!config.enabled)
         return [];
     const now = Date.now();
-    if (!modelCache || modelCache.expiresAt <= now)
+    if (!modelCache || now - modelCache.fetchedAt >= ttlMs(config))
         await refreshModels(config, signal);
     return [...(modelCache?.value.values() ?? [])];
 }
@@ -86,7 +86,7 @@ export async function discoverModel(modelId, config) {
     if (!config.enabled)
         return undefined;
     const now = Date.now();
-    if (!modelCache || modelCache.expiresAt <= now) {
+    if (!modelCache || now - modelCache.fetchedAt >= ttlMs(config)) {
         await refreshModels(config);
     }
     return modelCache?.value.get(modelId);
