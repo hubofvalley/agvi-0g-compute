@@ -5,7 +5,7 @@ An OpenClaw provider plugin for the official [0G Compute Router](https://router-
 - **Provider:** `agvi-0g-compute`
 - **Minimum OpenClaw version:** `2026.10.10`
 - **Router endpoint:** `https://router-api.0g.ai/v1`
-- **Current release:** [`v0.2.0`](https://github.com/hubofvalley/agvi-0g-compute/releases/tag/v0.2.0)
+- **Current release:** [`v0.2.1`](https://github.com/hubofvalley/agvi-0g-compute/releases/tag/v0.2.1)
 
 ## Installation
 
@@ -37,7 +37,7 @@ If ClawHub reports that the package is not visible while its security review is 
 #### GitHub release (public fallback)
 
 ```bash
-openclaw plugins install git:github.com/hubofvalley/agvi-0g-compute@v0.1.0
+openclaw plugins install git:github.com/hubofvalley/agvi-0g-compute@v0.2.1
 ```
 
 The repository is public, so this installation does not require GitHub credentials.
