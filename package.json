@@ -1,6 +1,6 @@
 {
   "name": "openclaw-plugin-agvi-0g-compute",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "OpenClaw provider plugin for AGVI 0G Compute.",
   "type": "module",
   "scripts": {

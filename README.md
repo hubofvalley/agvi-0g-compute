@@ -5,7 +5,7 @@ An OpenClaw provider plugin for the official [0G Compute Router](https://router-
 - **Provider:** `agvi-0g-compute`
 - **Minimum OpenClaw version:** `2026.10.10`
 - **Router endpoint:** `https://router-api.0g.ai/v1`
-- **Current release:** [`v0.1.0`](https://github.com/hubofvalley/agvi-0g-compute/releases/tag/v0.1.0)
+- **Current release:** [`v0.2.0`](https://github.com/hubofvalley/agvi-0g-compute/releases/tag/v0.2.0)
 
 ## Installation
 
