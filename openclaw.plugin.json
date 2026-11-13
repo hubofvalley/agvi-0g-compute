@@ -2,7 +2,7 @@
   "id": "agvi-0g-compute",
   "name": "AGVI 0G Compute",
   "description": "0G-aware OpenClaw provider with per-model transport, routing, trust, TEE and capability discovery.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "providers": [
     "agvi-0g-compute"
   ],
